@@ -2277,6 +2277,77 @@ impl CadDocument {
         });
     }
 
+    /// cadfv (fix D1): make sure the R2000+ plot-style placeholder exists.
+    ///
+    /// Drawings that come from R14 or earlier have no `ACAD_PLOTSTYLENAME`
+    /// dictionary, so their layers carry a null plot-style handle. AutoCAD
+    /// rejects a R2000+ DXF whose LAYER records lack group 390
+    /// ("No se ha recibido PlotStyleName"). This creates the same
+    /// DictionaryWithDefault + "Normal" PlaceHolder pair that
+    /// [`CadDocument::new`] builds and points every layer without a plot style
+    /// at it. Does nothing when the dictionary is already present.
+    pub fn ensure_plot_style_placeholder(&mut self) {
+        let root = self.header.named_objects_dict_handle;
+        let existing = match self.objects.get(&root) {
+            Some(ObjectType::Dictionary(d)) => d.get("ACAD_PLOTSTYLENAME"),
+            _ => return,
+        };
+        let placeholder_handle = match existing.and_then(|h| self.objects.get(&h)) {
+            Some(ObjectType::DictionaryWithDefault(d)) => d.default_handle,
+            Some(_) => return,
+            None => {
+                let dict_handle = self.allocate_handle();
+                let placeholder_handle = self.allocate_handle();
+                let mut dict = crate::objects::DictionaryWithDefault::new();
+                dict.handle = dict_handle;
+                dict.owner = root;
+                dict.default_handle = placeholder_handle;
+                dict.entries.push(("Normal".to_string(), placeholder_handle));
+                self.objects.insert(dict_handle, ObjectType::DictionaryWithDefault(dict));
+                let mut placeholder = crate::objects::PlaceHolder::new();
+                placeholder.handle = placeholder_handle;
+                placeholder.owner = dict_handle;
+                self.objects.insert(placeholder_handle, ObjectType::PlaceHolder(placeholder));
+                if let Some(ObjectType::Dictionary(d)) = self.objects.get_mut(&root) {
+                    d.add_entry("ACAD_PLOTSTYLENAME", dict_handle);
+                }
+                self.header.acad_plotstylename_dict_handle = dict_handle;
+                use crate::classes::{DxfClass, ProxyFlags};
+                for (dxf_name, cpp) in [
+                    ("ACDBDICTIONARYWDFLT", "AcDbDictionaryWithDefault"),
+                    ("ACDBPLACEHOLDER", "AcDbPlaceHolder"),
+                ] {
+                    if self.classes.get_by_name(dxf_name).is_none() {
+                        self.classes.add_or_update(DxfClass {
+                            dxf_name: dxf_name.to_string(),
+                            cpp_class_name: cpp.to_string(),
+                            application_name: "ObjectDBX Classes".to_string(),
+                            proxy_flags: ProxyFlags::NONE,
+                            instance_count: 0,
+                            was_zombie: false,
+                            is_an_entity: false,
+                            class_number: 0,
+                            item_class_id: 0x1F3,
+                            dwg_version: 0,
+                            maintenance_version: 0,
+                            unknown1: 0,
+                            unknown2: 0,
+                        });
+                    }
+                }
+                placeholder_handle
+            }
+        };
+        if placeholder_handle.is_null() {
+            return;
+        }
+        for layer in self.layers.iter_mut() {
+            if layer.plotstyle_handle.is_null() {
+                layer.plotstyle_handle = placeholder_handle;
+            }
+        }
+    }
+
     /// Allocate a new unique handle
     pub fn allocate_handle(&mut self) -> Handle {
         // The DWG reader inserts objects straight into `objects` without

@@ -12139,6 +12139,8 @@ impl<'a> SectionReader<'a> {
         let mut group = String::new();
         let mut owner_seen = false;
         let mut binary = Vec::new();
+        // cadfv (fix D7): AutoCAD's string stream, in its own 311 groups.
+        let mut text_binary = Vec::new();
         let mut object_data_bits = 0u32;
         let mut text_data_bits = 0u32;
         while let Some(pair) = self.reader.read_pair()? {
@@ -12193,13 +12195,18 @@ impl<'a> SectionReader<'a> {
                     text_data_bits = pair.as_int().unwrap_or(0).max(0) as u32;
                 }
                 310 => append_hex_bytes(&mut binary, &pair.value_string),
+                311 => append_hex_bytes(&mut text_binary, &pair.value_string),
                 _ => {}
             }
             if group == "}" {
                 group.clear();
             }
         }
-        let (data, text) = split_proxy_text_data(&binary, text_data_bits);
+        let (data, text) = if text_binary.is_empty() {
+            split_proxy_text_data(&binary, text_data_bits)
+        } else {
+            (&binary[..], &text_binary[..])
+        };
         object.payload = crate::objects::ProxyPayload::from_bits(data, object_data_bits);
         object.text_payload = crate::objects::ProxyPayload::from_bits(text, text_data_bits);
         if object.dwg_version == 0 && object.maintenance_version == 0 {
@@ -15117,6 +15124,8 @@ impl<'a> SectionReader<'a> {
         let mut text_data_bits = 0u32;
         let mut proxy_data = Vec::new();
         let mut object_data = Vec::new();
+        // cadfv (fix D7): AutoCAD's string stream, in its own 311 groups.
+        let mut text_binary = Vec::new();
         let mut object_ids = Vec::new();
         let mut reading_object_data = false;
         let mut subclass = String::new();
@@ -15156,6 +15165,7 @@ impl<'a> SectionReader<'a> {
                     object_data_bits = pair.as_int().unwrap_or(0).max(0) as u32;
                     reading_object_data = true;
                 }
+                311 if reading_object_data => append_hex_bytes(&mut text_binary, &pair.value_string),
                 310..=319 => {
                     if reading_object_data
                         || (proxy_data_size > 0 && proxy_data.len() >= proxy_data_size)
@@ -15195,7 +15205,11 @@ impl<'a> SectionReader<'a> {
         } else {
             version = (maintenance_version << 16) | (dwg_version & 0xffff);
         }
-        let (data, text) = split_proxy_text_data(&object_data, text_data_bits);
+        let (data, text) = if text_binary.is_empty() {
+            split_proxy_text_data(&object_data, text_data_bits)
+        } else {
+            (&object_data[..], &text_binary[..])
+        };
         let payload = crate::objects::ProxyPayload::from_bits(data, object_data_bits);
         let text_payload = crate::objects::ProxyPayload::from_bits(text, text_data_bits);
         if let Some(envelope) =

@@ -184,7 +184,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.block_record_names.clear();
         for br in document.block_records.iter() {
             set.insert(br.handle());
-            self.block_record_names.insert(br.handle(), br.name.clone());
+            self.block_record_names.insert(br.handle(), dxf_block_name(br).into_owned());
             if br.name.eq_ignore_ascii_case("*Model_Space") {
                 self.model_space_handle = br.handle();
             }
@@ -1360,8 +1360,12 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             }
         }
 
-        // Plot flag (code 290 is Bool type - single byte in binary)
-        self.writer.write_bool(290, layer.is_plottable)?;
+        // Plot flag (code 290 is Bool type - single byte in binary).
+        // cadfv (fix D1): AutoCAD rejects a DEFPOINTS layer flagged plottable
+        // ("Indicador de trazado no válido para la capa DEFPOINTS"); R14 files
+        // have no plot flag, so it defaults to true on read.
+        let plottable = layer.is_plottable && !layer.name.eq_ignore_ascii_case("DEFPOINTS");
+        self.writer.write_bool(290, plottable)?;
 
         let mut generated = Vec::new();
         // ACAD stores layer transparency as AcCmTransparency XDATA.
@@ -1965,7 +1969,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.write_common_table_data(block_record.handle(), owner, document)?;
         self.writer.write_subclass("AcDbSymbolTableRecord")?;
         self.writer.write_subclass("AcDbBlockTableRecord")?;
-        self.writer.write_string(2, block_record.name())?;
+        self.writer.write_string(2, &dxf_block_name(block_record))?;
         self.writer.write_handle(340, block_record.layout)?;
         let references: Vec<Handle> = block_record
             .insert_handles
@@ -2135,7 +2139,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         // Anonymous flag: use stored flag, or infer for truly anonymous blocks
         // (e.g. *D1, *U2, *T3, *X4, *E5, *A6) but NOT system blocks
         // (*Model_Space, *Paper_Space*)
-        let name = block_record.name();
+        let name = dxf_block_name(block_record);
         let is_anonymous_block = block_record.flags.anonymous
             || (name.starts_with('*')
                 && !block_record.is_model_space()
@@ -2178,12 +2182,12 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         }
         self.writer.write_string(8, "0")?;
         self.writer.write_subclass("AcDbBlockBegin")?;
-        self.writer.write_string(2, block_record.name())?;
+        self.writer.write_string(2, &name)?;
         self.writer.write_i16(70, flags)?;
         self.writer.write_double(10, block_record.base_point.x)?;
         self.writer.write_double(20, block_record.base_point.y)?;
         self.writer.write_double(30, block_record.base_point.z)?;
-        self.writer.write_string(3, block_record.name())?;
+        self.writer.write_string(3, &name)?;
         // Group code 1 is XRef path (empty for normal blocks)
         self.writer.write_string(1, &block_record.xref_path)?;
         // Group code 4 is the block description, written only when it has one.
@@ -4480,17 +4484,21 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_double(46, h)?;
         }
         // Background fill — only when enabled by the flags.
-        if mtext.background_fill_flags != 0 {
+        // cadfv (fix D4): background fill is a 2004+ feature; in a R2000 DXF
+        // codes 90/45/421 make AutoCAD fail with "No se leyó datoseX".
+        if mtext.background_fill_flags != 0 && self.dxf_version >= DxfVersion::AC1018 {
+            // cadfv (fix D6): same order and completeness as AutoCAD's DXFOUT
+            // (90, 63, [421], 45, 441). With 45 before 421 and no 63/441, an
+            // R2018 reader fails with "No se ha podido analizar el marcador
+            // embeddedObject".
             self.writer.write_i32(90, mtext.background_fill_flags)?;
-            self.writer.write_double(45, mtext.background_scale)?;
+            let aci = mtext.background_color.index().unwrap_or_else(|| mtext.background_color.approximate_index() as u16);
+            self.writer.write_i16(63, aci as i16)?;
             if let Some(tc) = mtext.background_color.to_true_color_value() {
                 self.writer.write_i32(421, tc)?;
-            } else if let Some(idx) = mtext.background_color.index() {
-                self.writer.write_i16(63, idx as i16)?;
             }
-            if mtext.background_transparency != 0 {
-                self.writer.write_i32(441, mtext.background_transparency)?;
-            }
+            self.writer.write_double(45, mtext.background_scale)?;
+            self.writer.write_i32(441, mtext.background_transparency)?;
         }
         // R2018+ keeps the column layout in the MTEXT's embedded object, as
         // the reference application writes it (it misreads the standard
@@ -6186,6 +6194,12 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                     }
                     self.write_associative_object_dxf(obj)?
                 }
+                // cadfv (fix D5): AutoCAD's own R2000 DXFOUT omits DATATABLE
+                // objects, and its R2000 reader rejects them ("Separación de
+                // clases para la clase ACDBDATATABLE esperada").
+                ObjectType::ClassObject(obj)
+                    if self.dxf_version < DxfVersion::AC1018
+                        && matches!(obj.data, crate::objects::ClassObjectData::DataTable(_)) => {}
                 ObjectType::ClassObject(obj) => self.write_class_object_dxf(obj)?,
                 ObjectType::DataObject(obj) => self.write_data_object_dxf(obj)?,
                 ObjectType::Field(obj) => self.write_field_object_dxf(obj)?,
@@ -6512,7 +6526,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer
                 .write_i32(95, (maintenance_version << 16) | (dwg_version & 0xffff))?;
         }
-        self.writer.write_bool(70, from_dxf)?;
+        // cadfv (fix D4b): AutoCAD 2027 rejects an R2018 DXF proxy flagged
+        // "originally from DXF" whose payload is DWG binary ("No se leyó
+        // datoseX"); the same proxy loads with the flag cleared, and R2000
+        // DXF accepts the flag. Tested on real files only for 2000 and 2018.
+        self.writer.write_bool(70, from_dxf && self.dxf_version < DxfVersion::AC1032)?;
         if let Some(graphics) = graphics {
             if v2010 {
                 self.writer.write_i64(160, graphics.len() as i64)?;
@@ -6524,12 +6542,19 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             }
         }
         const DHL_1021: i32 = 27;
-        if self.dxf_version >= DxfVersion::AC1021 && dwg_version >= DHL_1021 {
+        let text_framed = self.dxf_version >= DxfVersion::AC1021 && dwg_version >= DHL_1021;
+        if text_framed {
             let text_bits = text_payload.bit_count as i64;
             if v2010 {
                 self.writer.write_i64(162, text_bits)?;
             } else {
                 self.writer.write_i32(96, text_bits as i32)?;
+            }
+            // cadfv (fix D7): AutoCAD writes the string stream in its own 311
+            // groups right after its size, not appended to the 310 data.
+            // Appended, AutoCAD 2027 rejects the DXF ("No se leyó datoseX").
+            for chunk in text_payload.data().chunks(127) {
+                self.writer.write_binary(311, chunk)?;
             }
         }
         if v2010 {
@@ -6538,9 +6563,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_i32(93, payload.bit_count as i32)?;
         }
         let mut data = payload.data();
-        // No sample in the wild carries a non-empty string stream; keep it
-        // lossless by appending it after the main data (split again on read).
-        data.extend_from_slice(&text_payload.data());
+        // Without a framed string stream, keep it lossless by appending it
+        // after the main data (split again on read).
+        if !text_framed {
+            data.extend_from_slice(&text_payload.data());
+        }
         for chunk in data.chunks(127) {
             self.writer.write_binary(310, chunk)?;
         }
@@ -6618,7 +6645,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         write_has_predefined: bool,
         rapid_rt: bool,
     ) -> Result<()> {
-        let class_version = if rapid_rt && self.dxf_version == DxfVersion::AC1027 {
+        // cadfv (fix D3): AutoCAD 2027's own DXFOUT writes the RapidRT base
+        // class version minus one for 2018 too, not only for 2013; with the
+        // undecremented value it expects an extra 290 ("expected group code 290").
+        // R2000 targets keep the stored value (decrementing breaks other files).
+        let class_version = if rapid_rt && self.dxf_version >= DxfVersion::AC1027 {
             value.class_version - 1
         } else if !rapid_rt && self.dxf_version >= DxfVersion::AC1027 {
             value.class_version + 1
@@ -12337,4 +12368,16 @@ fn wrap_sat_line(line: &str) -> Vec<&str> {
     }
     pieces.push(&line[start..]);
     pieces
+}
+
+/// cadfv (fix D2): some real drawings contain a BLOCK_RECORD with an empty
+/// name. AutoCAD tolerates it in DWG but refuses the DXF ("Nombre de registro
+/// de tabla de símbolos no válido") — even the DXF AutoCAD itself writes. Give
+/// it a stable anonymous name derived from its handle so the DXF loads.
+fn dxf_block_name(block_record: &BlockRecord) -> std::borrow::Cow<'_, str> {
+    if block_record.name.is_empty() {
+        std::borrow::Cow::Owned(format!("*U{:X}", block_record.handle()))
+    } else {
+        std::borrow::Cow::Borrowed(block_record.name.as_str())
+    }
 }

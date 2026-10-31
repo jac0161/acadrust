@@ -395,6 +395,7 @@ impl DxfReader {
         // earlier would resolve every reference to a null handle.
         rewire_stale_text_style_references(&mut document);
         rewire_dangling_layout_block_records(&mut document);
+        adopt_ownerless_dictionary_entries(&mut document);
         document.ensure_model_layout();
         if document.version == crate::types::DxfVersion::AC1009 {
             let layers: HashMap<_, _> = document
@@ -865,6 +866,56 @@ fn rehandle_colliding_default_entries(
             for ds in document.dim_styles.iter_mut() {
                 if ds.dimtxsty_handle.value() == old {
                     ds.dimtxsty_handle = new;
+                }
+            }
+        }
+    }
+}
+
+// cadfv (fix F5): DXF files from other programs may omit 330 owners and the
+// {ACAD_REACTORS group on OBJECTS (13_i-06 tuberias de ventilación.dxf: the
+// NOD children, MLINESTYLE and LAYOUT records carry no 330). AutoCAD fills
+// them in on load and audits the DXF with 0 errors, but the DWG we wrote kept
+// a null owner: 14 AUDIT errors ("Owner Id Is Null", "Dictionary Reactor
+// Missing", "Entry ... has bad owner id in dictionary"). Adopt each such
+// dictionary entry the way AutoCAD does: owner and reactor = the dictionary.
+fn adopt_ownerless_dictionary_entries(document: &mut CadDocument) {
+    use crate::objects::ObjectType;
+
+    let mut dictionaries: Vec<(Handle, Vec<Handle>)> = document
+        .objects
+        .iter()
+        .filter_map(|(handle, object)| match object {
+            ObjectType::Dictionary(d) => Some((*handle, d.entries.iter().map(|(_, h)| *h).collect())),
+            ObjectType::DictionaryWithDefault(d) => Some((*handle, d.entries.iter().map(|(_, h)| *h).collect())),
+            _ => None,
+        })
+        .collect();
+    dictionaries.sort_by_key(|(handle, _)| handle.value());
+    for (dictionary, entries) in dictionaries {
+        for entry in entries {
+            if entry == dictionary || document.object_owner(entry) != Some(Handle::NULL) {
+                continue;
+            }
+            // shortcut: only the object kinds a NOD usually holds; extend if AUDIT reports another.
+            let (owner, reactors) = match document.objects.get_mut(&entry) {
+                Some(ObjectType::Dictionary(d)) => (&mut d.owner, Some(&mut d.reactors)),
+                Some(ObjectType::DictionaryWithDefault(d)) => (&mut d.owner, None),
+                Some(ObjectType::Layout(l)) => (&mut l.owner, None),
+                Some(ObjectType::MLineStyle(m)) => (&mut m.owner, None),
+                Some(ObjectType::PlotSettings(p)) => (&mut p.owner, None),
+                Some(ObjectType::PlaceHolder(p)) => (&mut p.owner, None),
+                Some(ObjectType::XRecord(x)) => (&mut x.owner, None),
+                Some(ObjectType::Group(g)) => (&mut g.owner, None),
+                Some(ObjectType::DictionaryVariable(v)) => (&mut v.owner_handle, None),
+                _ => continue,
+            };
+            *owner = dictionary;
+            match reactors {
+                Some(r) if r.is_empty() => r.push(dictionary),
+                Some(_) => {}
+                None => {
+                    document.reactors_by_handle.entry(entry).or_insert_with(|| vec![dictionary]);
                 }
             }
         }
