@@ -52,6 +52,23 @@ fn split_proxy_text_data(binary: &[u8], text_data_bits: u32) -> (&[u8], &[u8]) {
     binary.split_at(binary.len() - text_len)
 }
 
+/// cadfv (fix D7b): a pre-R2007 DXF (no 96/162 size group) carries an R2007+
+/// proxy's string stream merged into the data bits, as AutoCAD writes it; split
+/// it back so the proxy saves to DWG/DXF R2007+ with its own string stream.
+fn unmerge_proxy_text(
+    payload: crate::objects::ProxyPayload,
+    text: crate::objects::ProxyPayload,
+    dwg_version: i32,
+    text_size_seen: bool,
+) -> (crate::objects::ProxyPayload, crate::objects::ProxyPayload) {
+    if !text_size_seen && dwg_version >= 27 && text.bit_count == 0 {
+        if let Some(split) = payload.split_string_stream() {
+            return split;
+        }
+    }
+    (payload, text)
+}
+
 fn append_hex_bytes(target: &mut Vec<u8>, value: &str) {
     let bytes = value.trim().as_bytes();
     let mut index = 0;
@@ -10254,7 +10271,8 @@ impl<'a> SectionReader<'a> {
                         reactors.push(Handle::new(h));
                     }
                 }
-                331 if group == "{BLKREFS" => {
+                // cadfv (fix F5/08): 332 is a nested xref's BLOCK_RECORD.
+                331 | 332 if group == "{BLKREFS" => {
                     if let Ok(h) = u64::from_str_radix(pair.value_string.trim(), 16) {
                         block_record.insert_handles.push(Handle::new(h));
                     }
@@ -12143,6 +12161,7 @@ impl<'a> SectionReader<'a> {
         let mut text_binary = Vec::new();
         let mut object_data_bits = 0u32;
         let mut text_data_bits = 0u32;
+        let mut text_size_seen = false;
         while let Some(pair) = self.reader.read_pair()? {
             if pair.code == 0 {
                 self.reader.push_back(pair);
@@ -12193,6 +12212,7 @@ impl<'a> SectionReader<'a> {
                 // R2007+ string-stream size in bits: 96 in R2007, 162 from R2010.
                 96 | 162 => {
                     text_data_bits = pair.as_int().unwrap_or(0).max(0) as u32;
+                    text_size_seen = true;
                 }
                 310 => append_hex_bytes(&mut binary, &pair.value_string),
                 311 => append_hex_bytes(&mut text_binary, &pair.value_string),
@@ -12215,6 +12235,12 @@ impl<'a> SectionReader<'a> {
         } else {
             object.version = (object.maintenance_version << 16) | (object.dwg_version & 0xffff);
         }
+        (object.payload, object.text_payload) = unmerge_proxy_text(
+            std::mem::take(&mut object.payload),
+            std::mem::take(&mut object.text_payload),
+            object.dwg_version,
+            text_size_seen,
+        );
         Ok(object)
     }
 
@@ -15122,6 +15148,7 @@ impl<'a> SectionReader<'a> {
         let mut proxy_data_size = 0usize;
         let mut object_data_bits = 0u32;
         let mut text_data_bits = 0u32;
+        let mut text_size_seen = false;
         let mut proxy_data = Vec::new();
         let mut object_data = Vec::new();
         // cadfv (fix D7): AutoCAD's string stream, in its own 311 groups.
@@ -15158,6 +15185,7 @@ impl<'a> SectionReader<'a> {
                 // R2007+ string-stream size in bits: 96 in R2007, 162 from R2010.
                 96 | 162 => {
                     text_data_bits = pair.as_int().unwrap_or(0).max(0) as u32;
+                    text_size_seen = true;
                     reading_object_data = true;
                 }
                 // Data size in bits: 93 up to R2007, 161 (64-bit) from R2010.
@@ -15210,8 +15238,12 @@ impl<'a> SectionReader<'a> {
         } else {
             (&object_data[..], &text_binary[..])
         };
-        let payload = crate::objects::ProxyPayload::from_bits(data, object_data_bits);
-        let text_payload = crate::objects::ProxyPayload::from_bits(text, text_data_bits);
+        let (payload, text_payload) = unmerge_proxy_text(
+            crate::objects::ProxyPayload::from_bits(data, object_data_bits),
+            crate::objects::ProxyPayload::from_bits(text, text_data_bits),
+            dwg_version,
+            text_size_seen,
+        );
         if let Some(envelope) =
             crate::objects::semantic_property::decode_registered_class_envelope(&payload)
         {

@@ -1000,7 +1000,10 @@ fn prepare_legacy_document(document: &mut CadDocument) {
     // in the pre-R2010 record layout. Older saves drop the dictionary and the
     // style object it holds.
     use crate::objects::ObjectType;
-    let keep_mleader_style = document.version >= DxfVersion::AC1018
+    // cadfv (fix F5/05): AutoCAD 2027's SAVEAS 2000 also keeps them (file 05:
+    // its MLEADERs keep style 173). Dropped, every MLEADER pointed at a missing
+    // style and AUDIT reported 52 errors in the DWG 2000 copy.
+    let keep_mleader_style = document.version >= DxfVersion::AC1015
         && document.classes.get_by_name("MLEADERSTYLE").is_some();
     let root_handle = document.header.named_objects_dict_handle;
     let mut obsolete = Vec::new();

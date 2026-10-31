@@ -54,6 +54,22 @@ pub(crate) fn polyline2d_downsaves_to_lwpolyline(polyline: &Polyline2D) -> bool 
         && polyline.vertices.iter().all(|v| v.flags.bits() == 0)
 }
 
+/// cadfv (fix D5, D3b): objects AutoCAD's own R2000 DXFOUT omits, and that its
+/// R2000 reader rejects: DATATABLE ("Separación de clases ... ACDBDATATABLE
+/// esperada") and RAPIDRTRENDERSETTINGS ("expected group code 290" in files 17
+/// and 20; AutoCAD writes the class but no object, checked on file 05). They
+/// are also left out of `valid_handles` so no dictionary entry dangles.
+fn omitted_before_r2004(object: &ObjectType) -> bool {
+    matches!(
+        object,
+        ObjectType::ClassObject(obj) if matches!(
+            obj.data,
+            crate::objects::ClassObjectData::DataTable(_)
+                | crate::objects::ClassObjectData::RapidRtRenderSettings(_)
+        )
+    )
+}
+
 /// Legacy application objects that have no complete DXF representation.
 fn is_unrestorable_assoc_object(type_name: &str) -> bool {
     // Normalize: the DWG class names carry underscores (e.g.
@@ -151,6 +167,9 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         // writer produces and audit-skip them, which would leave dangling
         // dictionary entries behind.
         for (h, obj) in document.objects.iter() {
+            if self.dxf_version < DxfVersion::AC1018 && omitted_before_r2004(obj) {
+                continue;
+            }
             match obj {
                 ObjectType::Unknown {
                     raw_dxf_codes,
@@ -375,6 +394,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             // maintenance version is that recent (0, 4, 100 and 200 show the
             // value on one line with a literal `\P`).
             self.write_header_variable("$ACADMAINTVER", |w| w.write_i32(90, 377))?;
+        } else if self.dxf_version == DxfVersion::AC1015 {
+            // cadfv (fix D7b): AutoCAD 2027's R2000 DXFOUT writes 20. With 0 it
+            // loads AutoCAD-correct R2007+ proxies but drops the objects after
+            // them (25 AUDIT errors in file 01); with 20 the same file audits clean.
+            self.write_header_variable("$ACADMAINTVER", |w| w.write_i16(70, 20))?;
         } else if self.dxf_version >= DxfVersion::AC1015 {
             self.write_header_variable("$ACADMAINTVER", |w| w.write_i16(70, 0))?;
         }
@@ -1979,8 +2003,16 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             .collect();
         if !references.is_empty() {
             self.writer.write_string(102, "{BLKREFS")?;
-            for handle in references {
+            // cadfv (fix F5/08): a nested xref's BLOCK_RECORD goes in 332 after
+            // the INSERTs (331), as AutoCAD lists it; as 331 AutoCAD purged the
+            // nested xref of file 08 on open.
+            let is_block = |h: &Handle| document.block_records.iter().any(|b| b.handle == *h);
+            let (blocks, inserts): (Vec<Handle>, Vec<Handle>) = references.into_iter().partition(is_block);
+            for handle in inserts {
                 self.writer.write_handle(331, handle)?;
+            }
+            for handle in blocks {
+                self.writer.write_handle(332, handle)?;
             }
             self.writer.write_string(102, "}")?;
         }
@@ -6194,12 +6226,8 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                     }
                     self.write_associative_object_dxf(obj)?
                 }
-                // cadfv (fix D5): AutoCAD's own R2000 DXFOUT omits DATATABLE
-                // objects, and its R2000 reader rejects them ("Separación de
-                // clases para la clase ACDBDATATABLE esperada").
-                ObjectType::ClassObject(obj)
-                    if self.dxf_version < DxfVersion::AC1018
-                        && matches!(obj.data, crate::objects::ClassObjectData::DataTable(_)) => {}
+                // cadfv (fix D5, D3b): see omitted_before_r2004.
+                obj if self.dxf_version < DxfVersion::AC1018 && omitted_before_r2004(obj) => {}
                 ObjectType::ClassObject(obj) => self.write_class_object_dxf(obj)?,
                 ObjectType::DataObject(obj) => self.write_data_object_dxf(obj)?,
                 ObjectType::Field(obj) => self.write_field_object_dxf(obj)?,
@@ -6530,7 +6558,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         // "originally from DXF" whose payload is DWG binary ("No se leyó
         // datoseX"); the same proxy loads with the flag cleared, and R2000
         // DXF accepts the flag. Tested on real files only for 2000 and 2018.
-        self.writer.write_bool(70, from_dxf && self.dxf_version < DxfVersion::AC1032)?;
+        // cadfv (fix D7b): with $ACADMAINTVER 20 (as AutoCAD writes it) the
+        // R2000 reader rejects the flag the same way; cleared, file 35's DXF
+        // 2000 audits with 6 errors (original 66, 164 before).
+        let flag_ok = self.dxf_version > DxfVersion::AC1015 && self.dxf_version < DxfVersion::AC1032;
+        self.writer.write_bool(70, from_dxf && flag_ok)?;
         if let Some(graphics) = graphics {
             if v2010 {
                 self.writer.write_i64(160, graphics.len() as i64)?;
@@ -6557,6 +6589,21 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 self.writer.write_binary(311, chunk)?;
             }
         }
+        // cadfv (fix D7b): before R2007 AutoCAD merges an R2007+ string stream
+        // into the data bits (see ProxyPayload::merged_with_string_stream).
+        // Appended as whole bytes after `93` data bits, AutoCAD 2027 dropped every
+        // object after the proxy's dictionary (25 AUDIT errors in file 01's DXF 2000).
+        let (merged, empty);
+        let (payload, text_payload) = if !text_framed
+            && dwg_version >= DHL_1021
+            && text_payload.bit_count > 0
+        {
+            merged = payload.merged_with_string_stream(text_payload);
+            empty = crate::objects::ProxyPayload::default();
+            (&merged, &empty)
+        } else {
+            (payload, text_payload)
+        };
         if v2010 {
             self.writer.write_i64(161, payload.bit_count as i64)?;
         } else {

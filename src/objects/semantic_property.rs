@@ -118,6 +118,39 @@ impl ProxyPayload {
         }
     }
 
+    /// cadfv (fix D7b): AutoCAD's pre-R2007 DXF form of an R2007+ proxy: the
+    /// string stream is merged into the data bits as in the DWG object record,
+    /// `data + strings + RS size (low byte first) + 1-bit "has strings" flag`
+    /// (checked bit for bit against AutoCAD 2027's R2000 DXFOUT of file 01).
+    pub fn merged_with_string_stream(&self, text: &ProxyPayload) -> ProxyPayload {
+        let mut bits = payload_bits(self);
+        bits.extend(payload_bits(text));
+        let size = text.bit_count as u16;
+        for byte in size.to_le_bytes() {
+            bits.extend((0..8).rev().map(|i| byte >> i & 1 == 1));
+        }
+        bits.push(true);
+        bits_to_payload(&bits)
+    }
+
+    /// Inverse of [`merged_with_string_stream`](Self::merged_with_string_stream):
+    /// `None` if the trailing flag is clear or the size does not fit.
+    // shortcut: sizes of 0x8000 bits or more (extended RS) are not split; add the second RS if a real file needs it.
+    pub fn split_string_stream(&self) -> Option<(ProxyPayload, ProxyPayload)> {
+        let bits = payload_bits(self);
+        let n = bits.len();
+        if n < 17 || !bits[n - 1] {
+            return None;
+        }
+        let byte = |at: usize| bits[at..at + 8].iter().fold(0u16, |v, b| v << 1 | *b as u16);
+        let size = (byte(n - 17) | byte(n - 9) << 8) as usize;
+        if size & 0x8000 != 0 || size > n - 17 {
+            return None;
+        }
+        let start = n - 17 - size;
+        Some((bits_to_payload(&bits[..start]), bits_to_payload(&bits[start..n - 17])))
+    }
+
     pub fn data(&self) -> Vec<u8> {
         let mut records: Vec<&ProxyPayloadRecord> = self.records.iter().collect();
         records.sort_by_key(|record| record.sequence);
@@ -142,6 +175,21 @@ impl ProxyPayload {
         }
         output
     }
+}
+
+fn payload_bits(payload: &ProxyPayload) -> Vec<bool> {
+    let data = payload.data();
+    (0..payload.bit_count as usize)
+        .map(|i| data[i / 8] >> (7 - i % 8) & 1 == 1)
+        .collect()
+}
+
+fn bits_to_payload(bits: &[bool]) -> ProxyPayload {
+    let mut data = vec![0u8; bits.len().div_ceil(8)];
+    for (i, _) in bits.iter().enumerate().filter(|(_, b)| **b) {
+        data[i / 8] |= 0x80 >> (i % 8);
+    }
+    ProxyPayload::from_bits(&data, bits.len() as u32)
 }
 
 #[derive(Debug, Clone, PartialEq)]

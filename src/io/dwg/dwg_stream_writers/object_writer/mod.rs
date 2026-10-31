@@ -341,7 +341,14 @@ impl<'a> DwgObjectWriter<'a> {
             .insert_handles
             .iter()
             .copied()
-            .filter(|h| self.document.get_entity(*h).is_some())
+            // cadfv (fix F5/08): an unresolved xref lists its nested xref's
+            // BLOCK_RECORD here too (DXF `332` in {BLKREFS}). Dropped, AutoCAD
+            // purged the nested xref on open ("no guarda referencia y se ha
+            // limpiado") instead of keeping it as orphaned, as with the original.
+            .filter(|h| {
+                self.document.get_entity(*h).is_some()
+                    || self.document.block_records.iter().any(|b| b.handle == *h)
+            })
             .collect();
         for h in self.block_users.get(&record.handle).into_iter().flatten() {
             if !out.contains(h) {

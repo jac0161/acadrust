@@ -159,6 +159,18 @@ impl ExtendedData {
             } else {
                 record.values.extend(replacement.values.clone());
             }
+        } else if let Some(start) = match replacement.values.first() {
+            Some(key @ XDataValue::String(_)) => record.values.iter().position(|v| v == key),
+            _ => None,
+        } {
+            // cadfv (fix F2c): a keyed marker such as ("AcDbSavedByObjectVersion", 0)
+            // already present in the record is updated in place. The positional
+            // merge below overwrote the record's *first* string instead (e.g. the
+            // leading "AcRTDxfName" of a VISUALSTYLE read from an R2007 DXF), so the
+            // key was followed by a string and AutoCAD refused the R2004/R2000 DWG
+            // (ErrorStatus=53; file 36 of the cadfv corpus).
+            let end = (start + replacement.values.len()).min(record.values.len());
+            record.values.splice(start..end, replacement.values.clone());
         } else {
             let mut cursor = 0;
             for value in &replacement.values {
