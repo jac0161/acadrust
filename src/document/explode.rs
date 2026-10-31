@@ -15,11 +15,31 @@ use crate::tables::BlockRecord;
 use crate::types::{Handle, Transform, Vector3};
 
 impl CadDocument {
+    /// cadfv (fix: read-only explosion to *display* MLINE and MULTILEADER with
+    /// their style and blocks, without allocating handles; `explode_entity`
+    /// needs `&mut self`). A MULTILEADER keeps its landing and filled
+    /// arrowhead, which EXPLODE drops or turns into an outline.
+    pub fn explode_for_display(&self, entity: &EntityType) -> Vec<EntityType> {
+        match entity {
+            EntityType::MLine(mline) => self.explode_mline_with_context(mline),
+            EntityType::MultiLeader(leader) => self.multileader_context_parts(
+                leader,
+                crate::entities::explode::explode_multileader(leader),
+            ),
+            _ => entity.explode(),
+        }
+    }
+
     /// Expand MULTILEADER block content after resolving the referenced block.
     /// Text and leader geometry are produced by the detached entity path;
     /// block content needs the document's block table and base point.
     pub(crate) fn explode_multileader_with_context(&self, leader: &MultiLeader) -> Vec<EntityType> {
-        let mut parts = EntityType::MultiLeader(Box::new(leader.clone())).explode();
+        let parts = EntityType::MultiLeader(Box::new(leader.clone())).explode();
+        self.multileader_context_parts(leader, parts)
+    }
+
+    /// Adds to `parts` the custom arrowhead blocks and the block content.
+    fn multileader_context_parts(&self, leader: &MultiLeader, mut parts: Vec<EntityType>) -> Vec<EntityType> {
         for root in &leader.context.leader_roots {
             for line in &root.lines {
                 let arrow_handle = if line

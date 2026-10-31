@@ -247,7 +247,7 @@ pub(super) fn explode_leader_line(
     }
 }
 
-pub(super) fn explode_multileader(ml: &MultiLeader) -> Vec<EntityType> {
+pub(crate) fn explode_multileader(ml: &MultiLeader) -> Vec<EntityType> {
     // Decompose MultiLeader the way ACAD's EXPLODE does: per leader line,
     // the arrowhead and the segments down to the root's connection point;
     // per root, the landing; then the text.

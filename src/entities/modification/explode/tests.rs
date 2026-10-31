@@ -900,14 +900,19 @@ fn test_native_table_graphics_have_grid_and_cell_text() {
     table.set_cell_text(0, 0, "Title");
     table.set_cell_text(1, 0, "A");
     table.set_cell_text(1, 1, "B");
+    // cadfv: title merged across both columns; rows grow downwards.
+    table.rows[0].cells[0].merge_width = 2;
     let parts = EntityType::Table(Box::new(table)).explode();
-    assert_eq!(
-        parts
-            .iter()
-            .filter(|part| matches!(part, EntityType::Line(_)))
-            .count(),
-        7
-    );
+    let lines: Vec<_> = parts
+        .iter()
+        .filter_map(|part| match part {
+            EntityType::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+    // 3 horizontal + 2 outer verticals + the inner vertical below the title.
+    assert_eq!(lines.len(), 6);
+    assert!(lines.iter().all(|l| l.start.y <= 1e-9 && l.end.y <= 1e-9));
     assert_eq!(
         parts
             .iter()

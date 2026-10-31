@@ -231,6 +231,7 @@ mod primitives;
 mod text;
 
 pub(crate) use dimensions::explode_dimension_with_style;
+pub(crate) use leaders::explode_multileader;
 use dimensions::*;
 use leaders::*;
 use meshes::*;
@@ -339,60 +340,100 @@ fn explode_table(table: &Table) -> Vec<EntityType> {
             Some(*sum)
         }))
         .collect();
-    let point = |u: f64, v: f64| origin + horizontal * u + vertical * v;
-    let mut result = Vec::new();
-    for u in &x {
-        result.push(line_entity(
-            point(*u, 0.0),
-            point(*u, *y.last().unwrap()),
-            0.0,
-            normal,
-            &table.common,
-        ));
-    }
-    let title_row = table
-        .rows
-        .first()
-        .is_some_and(|row| row.cells.iter().any(|cell| !cell.text_value().is_empty()));
-    for (row_boundary, v) in y.iter().enumerate() {
-        if title_row && row_boundary == 1 {
-            for column in 0..x.len() - 1 {
-                result.push(line_entity(
-                    point(x[column], *v),
-                    point(x[column + 1], *v),
-                    0.0,
-                    normal,
-                    &table.common,
-                ));
+    // cadfv (fix: rows grow downwards from the insertion point (top-left
+    // corner), merged cells hide their inner borders, and cell text keeps its
+    // height, style, alignment and margins).
+    let point = |u: f64, v: f64| origin + horizontal * u - vertical * v;
+    let (n_rows, n_cols) = (table.rows.len(), table.columns.len());
+    // Anchor cell of every grid position (itself unless covered by a merge).
+    let mut owner: Vec<Vec<(usize, usize)>> =
+        (0..n_rows).map(|r| (0..n_cols).map(|c| (r, c)).collect()).collect();
+    for (r, row) in table.rows.iter().enumerate() {
+        for (c, cell) in row.cells.iter().enumerate().take(n_cols) {
+            let (w, h) = (cell.merge_width.max(1) as usize, cell.merge_height.max(1) as usize);
+            if w > 1 || h > 1 {
+                for rr in r..(r + h).min(n_rows) {
+                    for cc in c..(c + w).min(n_cols) {
+                        owner[rr][cc] = (r, c);
+                    }
+                }
             }
-        } else {
-            result.push(line_entity(
-                point(0.0, *v),
-                point(*x.last().unwrap(), *v),
-                0.0,
-                normal,
-                &table.common,
-            ));
         }
     }
+    let mut result = Vec::new();
+    // One line per run of visible border along each grid line.
+    let mut runs = |fixed: f64, cuts: &[f64], drawn: &dyn Fn(usize) -> bool, vertical_line: bool| {
+        let mut start = None;
+        for i in 0..cuts.len() {
+            let on = i < cuts.len() - 1 && drawn(i);
+            match (on, start) {
+                (true, None) => start = Some(cuts[i]),
+                (false, Some(s)) => {
+                    let (a, b) = if vertical_line {
+                        (point(fixed, s), point(fixed, cuts[i]))
+                    } else {
+                        (point(s, fixed), point(cuts[i], fixed))
+                    };
+                    result.push(line_entity(a, b, 0.0, normal, &table.common));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+    };
+    for (c, u) in x.iter().enumerate() {
+        let drawn = |r: usize| c == 0 || c == n_cols || owner[r][c - 1] != owner[r][c];
+        runs(*u, &y, &drawn, true);
+    }
+    for (r, v) in y.iter().enumerate() {
+        let drawn = |c: usize| r == 0 || r == n_rows || owner[r - 1][c] != owner[r][c];
+        runs(*v, &x, &drawn, false);
+    }
+    const ATTACH: [AttachmentPoint; 9] = [
+        AttachmentPoint::TopLeft,
+        AttachmentPoint::TopCenter,
+        AttachmentPoint::TopRight,
+        AttachmentPoint::MiddleLeft,
+        AttachmentPoint::MiddleCenter,
+        AttachmentPoint::MiddleRight,
+        AttachmentPoint::BottomLeft,
+        AttachmentPoint::BottomCenter,
+        AttachmentPoint::BottomRight,
+    ];
     for (row_index, row) in table.rows.iter().enumerate() {
-        for (column_index, cell) in row.cells.iter().enumerate().take(table.columns.len()) {
+        for (column_index, cell) in row.cells.iter().enumerate().take(n_cols) {
             let value = cell.text_value();
-            if value.is_empty() {
+            if value.is_empty() || owner[row_index][column_index] != (row_index, column_index) {
                 continue;
             }
-            let mut text = MText::with_value(
-                value,
-                point(
-                    (x[column_index] + x[column_index + 1]) * 0.5,
-                    (y[row_index] + y[row_index + 1]) * 0.5,
-                ),
-            )
-            .with_height(2.5)
-            .with_width((x[column_index + 1] - x[column_index]).max(0.0));
+            let x1 = x[(column_index + cell.merge_width.max(1) as usize).min(n_cols)];
+            let y1 = y[(row_index + cell.merge_height.max(1) as usize).min(n_rows)];
+            let (x0, y0) = (x[column_index], y[row_index]);
+            let content = cell.contents.first();
+            let style = cell.style.as_ref();
+            let height = [content.map(|c| c.text_height), style.map(|s| s.text_height)]
+                .into_iter()
+                .flatten()
+                .find(|h| *h > 0.0)
+                .unwrap_or(2.5);
+            let margin = style.map(|s| s.margin_left.max(0.0)).unwrap_or(0.0);
+            let alignment = style.map(|s| s.alignment).filter(|a| (1..=9).contains(a)).unwrap_or(5) as usize - 1;
+            let u = [x0 + margin, (x0 + x1) * 0.5, x1 - margin][alignment % 3];
+            let v = [y0 + margin, (y0 + y1) * 0.5, y1 - margin][alignment / 3];
+            let mut text = MText::with_value(value, point(u, v))
+                .with_height(height)
+                .with_width((x1 - x0 - 2.0 * margin).max(0.0));
             text.common = inherit_common(&table.common);
             text.normal = normal;
-            text.attachment_point = AttachmentPoint::MiddleCenter;
+            text.rotation = horizontal.y.atan2(horizontal.x);
+            text.attachment_point = ATTACH[alignment];
+            if let Some(name) = [content.map(|c| &c.text_style_name), style.map(|s| &s.text_style_name)]
+                .into_iter()
+                .flatten()
+                .find(|n| !n.is_empty())
+            {
+                text.style = name.clone();
+            }
             result.push(EntityType::MText(Box::new(text)));
         }
     }

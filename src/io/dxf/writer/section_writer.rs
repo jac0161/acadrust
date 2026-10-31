@@ -10967,6 +10967,17 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         Ok(())
     }
 
+    /// cadfv (fix B-r5): TABLECONTENT values end with `304 ACVALUE_END` only in
+    /// R2007+. AutoCAD 2027's R2000/R2004 DXFOUT writes none, and with
+    /// $ACADMAINTVER 20 (fix D7b) its R2000 reader rejects the whole file when
+    /// they are present (ErrorStatus=53, corpus file 10).
+    fn write_acvalue_end_dxf(&mut self) -> Result<()> {
+        if self.dxf_version >= DxfVersion::AC1021 {
+            self.writer.write_string(304, "ACVALUE_END")?;
+        }
+        Ok(())
+    }
+
     fn write_table_custom_data_dxf(&mut self, values: &[table::TableCustomData]) -> Result<()> {
         self.writer.write_string(301, "CUSTOMDATA")?;
         self.writer.write_string(1, "DATAMAP_BEGIN")?;
@@ -10975,7 +10986,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_string(300, &value.name)?;
             self.writer.write_string(301, "DATAMAP_VALUE")?;
             self.write_field_cell_value_dxf(&value.value)?;
-            self.writer.write_string(304, "ACVALUE_END")?;
+            self.write_acvalue_end_dxf()?;
         }
         self.writer.write_string(309, "DATAMAP_END")?;
         Ok(())
@@ -11135,7 +11146,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             TableCellContentType::Value => {
                 self.writer.write_string(300, "VALUE")?;
                 self.write_field_cell_value_dxf(&content.value)?;
-                self.writer.write_string(304, "ACVALUE_END")?;
+                self.write_acvalue_end_dxf()?;
             }
             TableCellContentType::Field => {
                 self.writer
