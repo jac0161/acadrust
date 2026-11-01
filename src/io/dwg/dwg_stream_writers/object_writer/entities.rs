@@ -5653,17 +5653,16 @@ impl<'a> DwgObjectWriter<'a> {
                 // SAT text â€” all DWG versions use the same encoding:
                 // BL-sized blocks of encrypted bytes (cipher: 159 - byte)
                 // terminated by BL(0).  Per LibreDWG dwg.spec.
+                // lince (fix R2000-ACIS): R13-R2000 DWG store solids as a legacy
+                // `400` SAT with no `asmheader`. AutoCAD rejects a newer ASM
+                // schema there (22300 + asmheader → ErrorStatus=53 on open), so
+                // down-convert any 7.0+ document to the 400 layout AutoCAD writes.
                 let legacy_sat;
                 let sat_text = if self.version.r13_15_only() {
                     legacy_sat = crate::entities::acis::SatDocument::parse(&sat_text)
                         .ok()
-                        // Only the classic SAT 700 schema is normalized here.
-                        // Newer ASM schemas require a modeler-level conversion.
-                        .filter(|doc| doc.header.version == crate::entities::acis::SatVersion::V7_0)
-                        .map(|mut doc| {
-                            doc.header.version = crate::entities::acis::SatVersion::V4_0;
-                            doc.to_sat_string()
-                        });
+                        .filter(|doc| doc.header.version.major >= 7)
+                        .map(|doc| doc.to_legacy_v400().to_sat_string());
                     legacy_sat.as_deref().unwrap_or(&sat_text)
                 } else {
                     &sat_text
@@ -5685,9 +5684,14 @@ impl<'a> DwgObjectWriter<'a> {
                     }
                 }
 
-                // Write as a single block + terminating BL(0)
-                self.writer.write_bit_long(encrypted.len() as i32);
-                self.writer.write_bytes(&encrypted);
+                // lince (fix R2000-ACIS-bloques): AutoCAD trocea el SAT en
+                // bloques de 4096 bytes como máximo (p. ej. [4096, 983, 0]) y su
+                // lector de R13-R2000 rechaza un bloque mayor: el archivo no abre
+                // (ErrorStatus=53). Escribimos el SAT en bloques de 4096 + BL(0).
+                for chunk in encrypted.chunks(4096) {
+                    self.writer.write_bit_long(chunk.len() as i32);
+                    self.writer.write_bytes(chunk);
+                }
                 self.writer.write_bit_long(0); // terminating empty block
             }
         }

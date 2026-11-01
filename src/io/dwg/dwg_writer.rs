@@ -3921,6 +3921,72 @@ mod tests {
         }
     }
 
+    /// lince (fix R2000-ACIS): a solid must survive the DWG round-trip in every
+    /// version. R13-R2000 stores inline version-1 SAT (down-converted to legacy
+    /// 400 so AutoCAD accepts it); R2004+ stores SAB. A large SAT (> 4096 bytes)
+    /// also exercises the multi-block SAT framing AutoCAD requires in R2000.
+    #[test]
+    fn inline_acis_solid_roundtrips_per_version() {
+        use crate::entities::solid3d::Solid3D;
+        use crate::entities::EntityType;
+        use crate::io::dwg::DwgReader;
+
+        // A SAT comfortably past one 4096-byte block: pad the sample body with
+        // filler `point` records so the writer must split it into blocks.
+        let mut big = String::from("700 0 1 0\n9 Reference 3 7.0 3 now\n1 1e-06 1e-10\n");
+        big.push_str("body $-1 -1 $-1 $1 $-1 $-1 #\n");
+        for i in 0..400 {
+            big.push_str(&format!("point $-1 -1 {i}.0 {i}.0 {i}.0 #\n"));
+        }
+        big.push_str("End-of-ACIS-data\n");
+        assert!(big.len() > 4096);
+
+        for version in [
+            DxfVersion::AC1015,
+            DxfVersion::AC1018,
+            DxfVersion::AC1021,
+            DxfVersion::AC1024,
+            DxfVersion::AC1027,
+            DxfVersion::AC1032,
+        ] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            let _ = doc.add_entity(EntityType::Solid3D(Solid3D::from_sat(&big)));
+
+            let bytes = DwgWriter::write_to_vec(&doc)
+                .unwrap_or_else(|e| panic!("write {version:?}: {e}"));
+            let mut reader = DwgReader::from_stream(std::io::Cursor::new(bytes));
+            let doc2 = reader
+                .read()
+                .unwrap_or_else(|e| panic!("read {version:?}: {e}"));
+
+            let solid = doc2
+                .entities()
+                .find_map(|e| match e {
+                    EntityType::Solid3D(s) => Some(s),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{version:?}: solid lost"));
+
+            let acis = &solid.acis_data;
+            assert!(acis.has_data(), "{version:?}: ACIS data lost");
+            if version == DxfVersion::AC1015 {
+                // R2000 inline ACIS is version-1 SAT, down-converted to 400, and
+                // split into <=4096-byte blocks (the > 4096 SAT spans several).
+                assert!(!acis.is_binary, "{version:?}: inline ACIS must be SAT");
+                assert_eq!(
+                    acis.parse().unwrap().header.version,
+                    crate::entities::acis::SatVersion::V4_0,
+                    "{version:?}: SAT must be down-converted to 400"
+                );
+                assert!(
+                    acis.sat_data.contains("body") && acis.sat_data.contains("point"),
+                    "{version:?}: SAT records lost across the 4096-byte block boundary"
+                );
+            }
+        }
+    }
+
     fn constraint_group_document(version: DxfVersion) -> CadDocument {
         use crate::objects::{
             Assoc2dConstraintGroup, AssocAction, AssocConstraintNode, AssocConstraintNodeData,

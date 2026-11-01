@@ -3152,6 +3152,72 @@ impl SatDocument {
         }
     }
 
+    /// Downgrade a modern SAT (ACIS 7.0+ / ASM 2xx) to the legacy ACIS 4.0
+    /// (version 400) layout that AutoCAD writes into R13–R2000 DWG.
+    ///
+    /// AutoCAD stores R2000 solids as a `400` SAT with **no** `asmheader`
+    /// record (the modeler's own version lives only in the product string).
+    /// A DWG whose 3DSOLID carries a newer schema (22300 + `asmheader`) is
+    /// rejected on open (`ErrorStatus=53`), even though DXF tolerates it.
+    ///
+    /// This fills any missing restore tails (so the 400 text is complete),
+    /// drops the `asmheader` record renumbering the pointers, and sets the
+    /// header to 4.0; `to_sat_string`'s `major < 7` path emits the 400 syntax.
+    pub fn to_legacy_v400(&self) -> SatDocument {
+        let mut doc = self.completed_for_restore().unwrap_or_else(|| self.clone());
+        let keep: Vec<bool> = doc
+            .records
+            .iter()
+            .map(|r| r.entity_type != "asmheader")
+            .collect();
+        if keep.iter().any(|&k| !k) {
+            let mut index_map = vec![-1i32; doc.records.len()];
+            let mut new_idx = 0i32;
+            for (old, &k) in keep.iter().enumerate() {
+                if k {
+                    index_map[old] = new_idx;
+                    new_idx += 1;
+                }
+            }
+            let remap = |p: i32| -> i32 {
+                if p < 0 || p as usize >= index_map.len() {
+                    p
+                } else {
+                    index_map[p as usize]
+                }
+            };
+            let old_records = std::mem::take(&mut doc.records);
+            for (old, mut rec) in old_records.into_iter().enumerate() {
+                if !keep[old] {
+                    continue;
+                }
+                rec.index = index_map[old];
+                rec.raw_text = None;
+                rec.attribute.0 = remap(rec.attribute.0);
+                for token in &mut rec.tokens {
+                    if let SatToken::Pointer(p) = token {
+                        p.0 = remap(p.0);
+                    }
+                }
+                doc.records.push(rec);
+            }
+            doc.header.num_records = doc.records.len();
+        }
+        // ASM 2xx `coedge`/`vertex` carry one extra auxiliary integer that the
+        // ACIS 4.0 schema does not (coedge: between owner-loop and pcurve;
+        // vertex: before the point). AutoCAD's modeler rejects it in a 400
+        // document (modeler error 65000). Plain (non-tolerant) coedges and
+        // vertices hold no other numeric field, so drop their integer tokens.
+        for rec in &mut doc.records {
+            if rec.entity_type == "coedge" || rec.entity_type == "vertex" {
+                rec.tokens.retain(|t| !matches!(t, SatToken::Integer(_)));
+                rec.raw_text = None;
+            }
+        }
+        doc.header.version = SatVersion::V4_0;
+        doc
+    }
+
     /// Strip non-geometry entities for SAB binary encoding.
     ///
     /// ACAD/IntelliCAD's ACIS SAB format only includes core geometric
@@ -3744,5 +3810,64 @@ mod serde_tests {
             );
             assert_eq!(serde_json::from_value::<SatToken>(json).unwrap(), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod legacy_v400_tests {
+    use super::*;
+
+    // lince (fix R2000-ACIS): the SAB→SAT path for R13-R2010 must emit a legacy
+    // ACIS 4.0 (version 400) document with no `asmheader` and without the extra
+    // ASM `coedge`/`vertex` auxiliary integer, matching what AutoCAD writes.
+    #[test]
+    fn to_legacy_v400_drops_asmheader_and_asm_fields() {
+        let mut doc = SatDocument::with_header(SatHeader::new());
+        doc.header.version = SatVersion::V7_0;
+        // index 0: asmheader (must be dropped, pointers renumbered).
+        doc.records.push(SatRecord::new(0, "asmheader"));
+        // index 1: body pointing at the coedge at (original) index 2.
+        let mut body = SatRecord::new(1, "body");
+        body.tokens = vec![SatToken::Pointer(SatPointer::new(2))];
+        doc.records.push(body);
+        // index 2: coedge with the ASM auxiliary Integer(0) before its pcurve.
+        let mut coedge = SatRecord::new(2, "coedge");
+        coedge.tokens = vec![
+            SatToken::Pointer(SatPointer::new(3)),
+            SatToken::Enum("forward".into()),
+            SatToken::Integer(0),
+            SatToken::Pointer(SatPointer::NULL),
+        ];
+        doc.records.push(coedge);
+        // index 3: vertex with the ASM auxiliary Integer(1) before its point.
+        let mut vertex = SatRecord::new(3, "vertex");
+        vertex.tokens = vec![
+            SatToken::Pointer(SatPointer::NULL),
+            SatToken::Integer(1),
+            SatToken::Pointer(SatPointer::NULL),
+        ];
+        doc.records.push(vertex);
+
+        let out = doc.to_legacy_v400();
+
+        assert_eq!(out.header.version, SatVersion::V4_0);
+        assert!(
+            !out.records.iter().any(|r| r.entity_type == "asmheader"),
+            "asmheader must be dropped"
+        );
+        let coedge = out.records.iter().find(|r| r.entity_type == "coedge").unwrap();
+        assert!(
+            !coedge.tokens.iter().any(|t| matches!(t, SatToken::Integer(_))),
+            "coedge ASM auxiliary integer must be stripped"
+        );
+        let vertex = out.records.iter().find(|r| r.entity_type == "vertex").unwrap();
+        assert!(
+            !vertex.tokens.iter().any(|t| matches!(t, SatToken::Integer(_))),
+            "vertex ASM auxiliary integer must be stripped"
+        );
+        // The body's pointer to the coedge (orig index 2) must follow the
+        // renumber after dropping index 0 → now index 1.
+        let body = out.records.iter().find(|r| r.entity_type == "body").unwrap();
+        assert_eq!(body.tokens[0], SatToken::Pointer(SatPointer::new(1)));
     }
 }
