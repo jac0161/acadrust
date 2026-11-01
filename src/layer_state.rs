@@ -244,7 +244,7 @@ impl CadDocument {
         let entries = self.encode_layer_state(&state);
 
         let mut xrecord = match self.objects.remove(&xrecord_handle) {
-            Some(ObjectType::XRecord(xrecord)) => xrecord,
+            Some(ObjectType::XRecord(xrecord)) => *xrecord,
             _ => XRecord::named(&state.name),
         };
         xrecord.handle = xrecord_handle;
@@ -258,7 +258,7 @@ impl CadDocument {
         xrecord.raw_dwg_handle_bits = 0;
         xrecord.raw_dwg_version = None;
         self.objects
-            .insert(xrecord_handle, ObjectType::XRecord(xrecord));
+            .insert(xrecord_handle, ObjectType::XRecord(Box::new(xrecord)));
 
         if let Some(ObjectType::Dictionary(dictionary)) = self.objects.get_mut(&dictionary_handle) {
             if let Some((key, handle)) = dictionary

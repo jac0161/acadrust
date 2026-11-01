@@ -721,7 +721,7 @@ mod tests {
         style.elements = vec![MLineStyleElement::new(1.0), MLineStyleElement::new(-1.0)];
         document
             .objects
-            .insert(style_handle, ObjectType::MLineStyle(style));
+            .insert(style_handle, ObjectType::MLineStyle(Box::new(style)));
 
         let mut mline =
             MLine::from_points(&[Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)]);
@@ -754,7 +754,7 @@ mod tests {
         style.elements = vec![MLineStyleElement::new(1.0), MLineStyleElement::new(-1.0)];
         document
             .objects
-            .insert(style_handle, ObjectType::MLineStyle(style));
+            .insert(style_handle, ObjectType::MLineStyle(Box::new(style)));
 
         let mut mline =
             MLine::from_points(&[Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)]);

@@ -400,49 +400,53 @@ impl Layout {
 pub enum ObjectType {
     /// Dictionary object
     Dictionary(Dictionary),
+    // lince (fix memoria: ObjectType con Box): las variantes gordas van encajonadas para
+    // que el enum no mida lo que la mayor (Material, ~2 KB) y los miles de objetos pequeños
+    // (SCALE) no paguen ese tamaño en `doc.objects`. El `Box` es solo disposición en memoria;
+    // la serialización DWG/DXF lee/escribe los mismos campos (salida byte-idéntica).
     /// Layout object
-    Layout(Layout),
+    Layout(Box<Layout>),
     /// XRecord object - extended data storage
-    XRecord(XRecord),
+    XRecord(Box<XRecord>),
     /// Group object - named collection of entities
     Group(Group),
     /// MLineStyle object - multiline style definition
-    MLineStyle(MLineStyle),
+    MLineStyle(Box<MLineStyle>),
     /// ImageDefinition object - raster image definition
     ImageDefinition(ImageDefinition),
     /// UnderlayDefinition object - PDF/DWF/DGN underlay file reference
-    UnderlayDefinition(UnderlayDefinition),
+    UnderlayDefinition(Box<UnderlayDefinition>),
     /// PlotSettings object - plot configuration
-    PlotSettings(PlotSettings),
+    PlotSettings(Box<PlotSettings>),
     /// MultiLeaderStyle object - multileader style definition
-    MultiLeaderStyle(MultiLeaderStyle),
+    MultiLeaderStyle(Box<MultiLeaderStyle>),
     /// TableStyle object - table style definition
-    TableStyle(TableStyle),
+    TableStyle(Box<TableStyle>),
     /// Standalone AcDbTableContent object.
     ///
     /// The binary/DXF payload is the same linked/formatted table-data tree
     /// embedded by modern ACAD_TABLE entities, so it deliberately reuses the
     /// complete semantic `Table` model.
-    TableContent(crate::entities::Table),
+    TableContent(Box<crate::entities::Table>),
     /// Scale object - named scale definition
     Scale(Scale),
     /// Annotative per-object context data (`AcDb*ObjectContextData` leaf) — one
     /// per-scale representation of an annotative object.
-    ObjectContextData(ObjectContextData),
+    ObjectContextData(Box<ObjectContextData>),
     /// SortEntitiesTable object - entity draw order
-    SortEntitiesTable(SortEntitiesTable),
+    SortEntitiesTable(Box<SortEntitiesTable>),
     /// DictionaryVariable object - named variable in dictionary
     DictionaryVariable(DictionaryVariable),
     /// VisualStyle object
-    VisualStyle(VisualStyle),
+    VisualStyle(Box<VisualStyle>),
     /// Material object
-    Material(Material),
+    Material(Box<Material>),
     /// ImageDefinitionReactor object
     ImageDefinitionReactor(ImageDefinitionReactor),
     /// GeoData object
-    GeoData(GeoData),
+    GeoData(Box<GeoData>),
     /// SpatialFilter object
-    SpatialFilter(SpatialFilter),
+    SpatialFilter(Box<SpatialFilter>),
     /// RasterVariables object
     RasterVariables(RasterVariables),
     /// BookColor (DBCOLOR) object
@@ -454,27 +458,27 @@ pub enum ObjectType {
     /// WipeoutVariables object
     WipeoutVariables(WipeoutVariables),
     /// Dynamic-block visibility parameter.
-    BlockVisibilityParameter(BlockVisibilityParameter),
+    BlockVisibilityParameter(Box<BlockVisibilityParameter>),
     /// Dynamic-block parameter, grip, action or evaluation/history object.
-    DynamicBlock(DynamicBlockObject),
+    DynamicBlock(Box<DynamicBlockObject>),
     /// Associative network, dependency, action-body or action-parameter object.
-    Associative(AssociativeObject),
+    Associative(Box<AssociativeObject>),
     /// Class-registered non-graphical object with a native semantic payload.
-    ClassObject(ClassObject),
+    ClassObject(Box<ClassObject>),
     /// Database helper object carrying an index/filter/reference graph.
     DataObject(DataObject),
     /// Dynamic text field definition.
-    Field(Field),
+    Field(Box<Field>),
     /// Collection of field handles.
     FieldList(FieldList),
     /// Registered application object represented by typed DXF properties.
-    RegisteredClass(RegisteredClassObject),
+    RegisteredClass(Box<RegisteredClassObject>),
     /// DGN line-style definition or component object.
-    DgnLineStyle(DgnLineStyleObject),
+    DgnLineStyle(Box<DgnLineStyleObject>),
     /// Fixed ACAD proxy-object schema.
-    ProxyObject(ProxyObject),
+    ProxyObject(Box<ProxyObject>),
     /// ACAD Arch non-graphical class (style, display rep, anchor, list).
-    Arch(crate::classes::arch::ArchObject),
+    Arch(Box<crate::classes::arch::ArchObject>),
     /// Unknown object type (stored as raw data)
     Unknown {
         /// Object type name
@@ -752,6 +756,16 @@ impl ObjectType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// lince (fix memoria: ObjectType con Box): el enum debe seguir cabiendo en decenas de
+    /// bytes. Antes de encajonar las variantes gordas medía 2088 (lo que ocupa `Material`);
+    /// con `Box` lo fija la mayor variante sin encajonar (`Unknown`, ~104 B). Esta prueba
+    /// avisa si alguien reintroduce una variante grande sin `Box` e infla `doc.objects`.
+    #[test]
+    fn objecttype_no_engorda() {
+        let n = std::mem::size_of::<ObjectType>();
+        assert!(n <= 128, "ObjectType mide {n} bytes; encajona (Box) la variante gorda nueva");
+    }
 
     #[test]
     fn test_dictionary_creation() {

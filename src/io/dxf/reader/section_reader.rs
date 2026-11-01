@@ -6943,14 +6943,14 @@ impl<'a> SectionReader<'a> {
                         }
                         "LAYOUT" => {
                             if let Some(obj) = self.read_layout()? {
-                                document.objects.insert(obj.handle, ObjectType::Layout(obj));
+                                document.objects.insert(obj.handle, ObjectType::Layout(Box::new(obj)));
                             }
                         }
                         "XRECORD" => {
                             if let Some(obj) = self.read_xrecord()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::XRecord(obj));
+                                    .insert(obj.handle, ObjectType::XRecord(Box::new(obj)));
                             }
                         }
                         "GROUP" => {
@@ -6962,7 +6962,7 @@ impl<'a> SectionReader<'a> {
                             if let Some(obj) = self.read_mlinestyle_object()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::MLineStyle(obj));
+                                    .insert(obj.handle, ObjectType::MLineStyle(Box::new(obj)));
                             }
                         }
                         "IMAGEDEF" => {
@@ -6982,35 +6982,35 @@ impl<'a> SectionReader<'a> {
                             if let Some(obj) = self.read_underlay_definition(utype)? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::UnderlayDefinition(obj));
+                                    .insert(obj.handle, ObjectType::UnderlayDefinition(Box::new(obj)));
                             }
                         }
                         "MLEADERSTYLE" => {
                             if let Some(obj) = self.read_multileader_style()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::MultiLeaderStyle(obj));
+                                    .insert(obj.handle, ObjectType::MultiLeaderStyle(Box::new(obj)));
                             }
                         }
                         "PLOTSETTINGS" => {
                             if let Some(obj) = self.read_plot_settings()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::PlotSettings(obj));
+                                    .insert(obj.handle, ObjectType::PlotSettings(Box::new(obj)));
                             }
                         }
                         "TABLESTYLE" => {
                             if let Some(obj) = self.read_table_style()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::TableStyle(obj));
+                                    .insert(obj.handle, ObjectType::TableStyle(Box::new(obj)));
                             }
                         }
                         "TABLECONTENT" => {
                             if let Some(obj) = self.read_table_content_object_typed_dxf()? {
                                 document
                                     .objects
-                                    .insert(obj.common.handle, ObjectType::TableContent(obj));
+                                    .insert(obj.common.handle, ObjectType::TableContent(Box::new(obj)));
                             }
                         }
                         "SCALE" => {
@@ -7022,7 +7022,7 @@ impl<'a> SectionReader<'a> {
                             if let Some(obj) = self.read_sort_entities_table(document.version)? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::SortEntitiesTable(obj));
+                                    .insert(obj.handle, ObjectType::SortEntitiesTable(Box::new(obj)));
                             }
                         }
                         "DICTIONARYVAR" => {
@@ -7036,14 +7036,14 @@ impl<'a> SectionReader<'a> {
                             if let Some(obj) = self.read_visualstyle()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::VisualStyle(obj));
+                                    .insert(obj.handle, ObjectType::VisualStyle(Box::new(obj)));
                             }
                         }
                         "MATERIAL" => {
                             if let Some(obj) = self.read_material()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::Material(obj));
+                                    .insert(obj.handle, ObjectType::Material(Box::new(obj)));
                             }
                         }
                         "IMAGEDEF_REACTOR" => {
@@ -7057,7 +7057,7 @@ impl<'a> SectionReader<'a> {
                             let obj = self.read_geodata()?;
                             document
                                 .objects
-                                .insert(obj.handle, ObjectType::GeoData(obj));
+                                .insert(obj.handle, ObjectType::GeoData(Box::new(obj)));
                         }
                         "BREAKDATA"
                         | "BREAKPOINTREF"
@@ -7083,7 +7083,7 @@ impl<'a> SectionReader<'a> {
                             if let Some(obj) = self.read_spatial_filter()? {
                                 document
                                     .objects
-                                    .insert(obj.handle, ObjectType::SpatialFilter(obj));
+                                    .insert(obj.handle, ObjectType::SpatialFilter(Box::new(obj)));
                             }
                         }
                         "RASTERVARIABLES" => {
@@ -7133,7 +7133,7 @@ impl<'a> SectionReader<'a> {
                                     objects: obj.referenced_objects.clone(),
                                 },
                             );
-                            document.objects.insert(obj.handle, ObjectType::Field(obj));
+                            document.objects.insert(obj.handle, ObjectType::Field(Box::new(obj)));
                         }
                         "FIELDLIST" | "ACDBFIELDLIST" => {
                             let obj = self.read_field_list_dxf()?;
@@ -7150,7 +7150,7 @@ impl<'a> SectionReader<'a> {
                                     .insert(parameter.handle, parameter.clone());
                                 document.objects.insert(
                                     parameter.handle,
-                                    ObjectType::BlockVisibilityParameter(parameter.clone()),
+                                    ObjectType::BlockVisibilityParameter(Box::new(parameter.clone())),
                                 );
                             } else {
                                 // An evaluated reference names the dynamic block
@@ -7167,7 +7167,7 @@ impl<'a> SectionReader<'a> {
                                 }
                                 document
                                     .objects
-                                    .insert(object.handle, ObjectType::DynamicBlock(object));
+                                    .insert(object.handle, ObjectType::DynamicBlock(Box::new(object)));
                             }
                         }
                         name if is_object_context_name(name) => {
@@ -7180,14 +7180,14 @@ impl<'a> SectionReader<'a> {
                             }
                             document
                                 .objects
-                                .insert(object.handle, ObjectType::ObjectContextData(object));
+                                .insert(object.handle, ObjectType::ObjectContextData(Box::new(object)));
                         }
                         name if is_associative_object_name(name) => {
                             let object =
                                 self.read_associative_object_dxf(name, document.version)?;
                             document
                                 .objects
-                                .insert(object.handle, ObjectType::Associative(object));
+                                .insert(object.handle, ObjectType::Associative(Box::new(object)));
                         }
                         name if is_class_object_name(name) => {
                             let object = self.read_class_object_dxf(name, document.version)?;
@@ -7213,13 +7213,13 @@ impl<'a> SectionReader<'a> {
                             }
                             document
                                 .objects
-                                .insert(object.handle, ObjectType::ClassObject(object));
+                                .insert(object.handle, ObjectType::ClassObject(Box::new(object)));
                         }
                         name if is_dgn_line_style_name(name) => {
                             let object = self.read_dgn_line_style_object(name)?;
                             document
                                 .objects
-                                .insert(object.handle, ObjectType::DgnLineStyle(object));
+                                .insert(object.handle, ObjectType::DgnLineStyle(Box::new(object)));
                         }
                         "ACAD_PROXY_OBJECT" => {
                             let object = self.read_proxy_object_dxf()?;
@@ -7228,7 +7228,7 @@ impl<'a> SectionReader<'a> {
                                 crate::objects::semantic_property::decode_registered_class_envelope(
                                     &object.payload,
                                 ) {
-                                ObjectType::RegisteredClass(RegisteredClassObject {
+                                ObjectType::RegisteredClass(Box::new(RegisteredClassObject {
                                     handle: object.handle,
                                     owner: object.owner,
                                     reactors: object.reactors,
@@ -7241,9 +7241,9 @@ impl<'a> SectionReader<'a> {
                                     raw_dwg_data: None,
                                     raw_dwg_handle_bits: 0,
                                     raw_dwg_version: None,
-                                })
+                                }))
                             } else {
-                                ObjectType::ProxyObject(object)
+                                ObjectType::ProxyObject(Box::new(object))
                             };
                             document.objects.insert(handle, object_type);
                         }
@@ -7251,7 +7251,7 @@ impl<'a> SectionReader<'a> {
                             let object = self.read_registered_class_object(name)?;
                             document
                                 .objects
-                                .insert(object.handle, ObjectType::RegisteredClass(object));
+                                .insert(object.handle, ObjectType::RegisteredClass(Box::new(object)));
                         }
                         _ => {
                             let type_name = pair.value_string.clone();
@@ -7271,7 +7271,7 @@ impl<'a> SectionReader<'a> {
                                 let mut arch =
                                     crate::classes::arch::ArchObject::new(type_name, handle, owner);
                                 arch.raw_dxf_codes = raw_dxf_codes;
-                                ObjectType::Arch(arch)
+                                ObjectType::Arch(Box::new(arch))
                             } else {
                                 ObjectType::Unknown {
                                     type_name,
@@ -22730,7 +22730,7 @@ mod tests {
         let h = crate::types::Handle::new(0xC1);
         doc.objects.insert(
             h,
-            ObjectType::SpatialFilter(crate::objects::SpatialFilter::new()),
+            ObjectType::SpatialFilter(Box::new(crate::objects::SpatialFilter::new())),
         );
         let bytes = crate::io::dxf::writer::DxfWriter::new(&doc)
             .write_to_vec()
@@ -22823,7 +22823,7 @@ mod tests {
                 [0.0, 0.0, 0.0, 1.0],
             ],
         };
-        doc.objects.insert(h, ObjectType::SpatialFilter(sf));
+        doc.objects.insert(h, ObjectType::SpatialFilter(Box::new(sf)));
 
         let doc2 = roundtrip(doc);
         let Some(ObjectType::SpatialFilter(back)) = doc2.objects.get(&h) else {

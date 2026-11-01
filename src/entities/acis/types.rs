@@ -3215,6 +3215,9 @@ impl SatDocument {
             }
         }
         doc.header.version = SatVersion::V4_0;
+        // The 400 header counts the actual body roots: a 22300 stream counts the asmheader too (num_bodies = 2 for
+        // one body), and dropping it here must drop that count, or AutoCAD rejects the R2000 DWG (ErrorStatus=53).
+        doc.header.num_bodies = doc.records.iter().filter(|r| r.entity_type == "body").count();
         doc
     }
 

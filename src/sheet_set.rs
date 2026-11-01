@@ -1314,7 +1314,7 @@ impl CadDocument {
             x.cloning_flags = crate::objects::DictionaryCloningFlags::KeepExisting;
             x.entries
                 .push(crate::objects::XRecordEntry::new(code, value));
-            self.objects.insert(handle, ObjectType::XRecord(x));
+            self.objects.insert(handle, ObjectType::XRecord(Box::new(x)));
             if old != Some(handle) {
                 if let Some(ObjectType::Dictionary(d)) = self.objects.get_mut(&dict_handle) {
                     d.entries.retain(|(k, _)| k != key);

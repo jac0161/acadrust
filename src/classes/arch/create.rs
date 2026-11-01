@@ -443,7 +443,7 @@ fn add_style(
     object.raw_dwg_data = Some(raw);
     object.raw_dwg_handle_bits = handle_bits;
     object.raw_dwg_version = Some(DxfVersion::AC1032);
-    document.objects.insert(handle, ObjectType::Arch(object));
+    document.objects.insert(handle, ObjectType::Arch(Box::new(object)));
     Ok(handle)
 }
 

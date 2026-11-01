@@ -1065,7 +1065,7 @@ pub fn custom_records_as_proxies(document: &mut CadDocument, target: DxfVersion)
                 continue;
             };
             let (dwg_version, maintenance_version, version) = versions(*source);
-            *object = ObjectType::ProxyObject(ProxyObject {
+            *object = ObjectType::ProxyObject(Box::new(ProxyObject {
                 handle: *handle,
                 owner: *owner,
                 reactors,
@@ -1079,7 +1079,7 @@ pub fn custom_records_as_proxies(document: &mut CadDocument, target: DxfVersion)
                 text_payload,
                 object_ids,
                 ..Default::default()
-            });
+            }));
             converted += 1;
             continue;
         }
@@ -1090,7 +1090,7 @@ pub fn custom_records_as_proxies(document: &mut CadDocument, target: DxfVersion)
             continue;
         };
         let (dwg_version, maintenance_version, version) = versions(source);
-        *object = ObjectType::ProxyObject(ProxyObject {
+        *object = ObjectType::ProxyObject(Box::new(ProxyObject {
             handle: *handle,
             owner: arch.owner,
             reactors: arch.reactors.clone(),
@@ -1104,7 +1104,7 @@ pub fn custom_records_as_proxies(document: &mut CadDocument, target: DxfVersion)
             text_payload,
             object_ids,
             ..Default::default()
-        });
+        }));
         converted += 1;
     }
     let arch_entities: Vec<Handle> = document
@@ -2930,7 +2930,7 @@ mod tests {
             },
         ));
         doc.objects
-            .insert(handle, ObjectType::DynamicBlock(history));
+            .insert(handle, ObjectType::DynamicBlock(Box::new(history)));
         let mut source =
             DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(&doc).unwrap()))
                 .read()
@@ -3019,7 +3019,7 @@ mod tests {
         filter.handle = document.allocate_handle();
         document
             .objects
-            .insert(filter.handle, ObjectType::ClassObject(filter));
+            .insert(filter.handle, ObjectType::ClassObject(Box::new(filter)));
         document
     }
 
@@ -3633,7 +3633,7 @@ mod tests {
         orphan.handle = orphan_handle;
         doc.objects.insert(
             orphan_handle,
-            crate::objects::ObjectType::MLineStyle(orphan),
+            crate::objects::ObjectType::MLineStyle(Box::new(orphan)),
         );
         doc.header.current_multiline_style_handle = Handle::NULL;
 
@@ -3658,7 +3658,7 @@ mod tests {
         recovery.handle = recovery_handle;
         doc.objects.insert(
             recovery_handle,
-            crate::objects::ObjectType::MLineStyle(recovery),
+            crate::objects::ObjectType::MLineStyle(Box::new(recovery)),
         );
         let crate::objects::ObjectType::Dictionary(dictionary) = doc
             .objects
@@ -3999,7 +3999,7 @@ mod tests {
         let owner = document.header.named_objects_dict_handle;
         document.objects.insert(
             handle,
-            ObjectType::Associative(AssociativeObject {
+            ObjectType::Associative(Box::new(AssociativeObject {
                 handle,
                 owner,
                 dxf_name: "ASSOC2DCONSTRAINTGROUP".to_string(),
@@ -4031,7 +4031,7 @@ mod tests {
                     ..Default::default()
                 }),
                 ..Default::default()
-            }),
+            })),
         );
         document
     }
@@ -4042,10 +4042,10 @@ mod tests {
             .objects
             .values()
             .find_map(|object| match object {
-                ObjectType::Associative(AssociativeObject {
-                    data: AssociativeData::ConstraintGroup(group),
-                    ..
-                }) => Some(group),
+                ObjectType::Associative(a) => match &a.data {
+                    AssociativeData::ConstraintGroup(group) => Some(group),
+                    _ => None,
+                },
                 _ => None,
             })
             .expect("constraint group should round-trip")

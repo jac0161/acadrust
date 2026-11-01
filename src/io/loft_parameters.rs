@@ -174,17 +174,14 @@ fn clone_metadata(
     }
     let mut object = document.objects.get(&source)?.clone();
     let extension = document.extension_dictionary_handle(source);
-    if !matches!(
+    if !(matches!(
         &object,
         ObjectType::Dictionary(_)
             | ObjectType::Field(_)
             | ObjectType::FieldList(_)
             | ObjectType::DictionaryVariable(_)
-            | ObjectType::XRecord(XRecord {
-                entries_complete: true,
-                ..
-            })
-    ) {
+    ) || matches!(&object, ObjectType::XRecord(x) if x.entries_complete))
+    {
         return None;
     }
     let handle = document.allocate_handle();
@@ -367,7 +364,7 @@ pub(crate) fn prepared(document: &CadDocument) -> Cow<'_, CadDocument> {
         }
         output
             .objects
-            .insert(record_handle, ObjectType::XRecord(record));
+            .insert(record_handle, ObjectType::XRecord(Box::new(record)));
         output
             .objects
             .insert(dictionary.handle, ObjectType::Dictionary(dictionary));

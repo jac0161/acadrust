@@ -102,7 +102,7 @@ pub(crate) fn store(document: &mut CadDocument) {
         dictionary.set_entry_hard_owner(KEY, true);
         document
             .objects
-            .insert(record_handle, ObjectType::XRecord(record));
+            .insert(record_handle, ObjectType::XRecord(Box::new(record)));
         document
             .objects
             .insert(dictionary.handle, ObjectType::Dictionary(dictionary));
@@ -266,7 +266,7 @@ fn store_references(document: &mut CadDocument) {
             dictionary.set_entry_hard_owner(REFERENCE_KEY, true);
             document
                 .objects
-                .insert(record.handle, ObjectType::XRecord(record));
+                .insert(record.handle, ObjectType::XRecord(Box::new(record)));
         } else {
             remove_record(document, &mut dictionary, REFERENCE_KEY);
         }
