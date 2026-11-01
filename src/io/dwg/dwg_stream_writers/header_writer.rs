@@ -576,8 +576,8 @@ fn write_header_fields(w: &mut SectionWriter, v: DxfVersion, h: &HeaderVariables
     w.write_3bit_double(h.model_space_ucs_x_axis);
     w.write_3bit_double(h.model_space_ucs_y_axis);
 
-    // UCSNAME (MSPACE)
-    w.write_handle_ref(DwgReferenceType::HardPointer, Handle::NULL);
+    // UCSNAME (MSPACE) — lince (fix UCSNAME): the current named UCS (resolved in `prepare_header`).
+    w.write_handle_ref(DwgReferenceType::HardPointer, h.model_space_ucs_name_handle);
 
     if r2000_plus(v) {
         // UCSORTHOREF

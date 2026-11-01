@@ -340,7 +340,7 @@ fn explode_table(table: &Table) -> Vec<EntityType> {
             Some(*sum)
         }))
         .collect();
-    // cadfv (fix: rows grow downwards from the insertion point (top-left
+    // lince (fix: rows grow downwards from the insertion point (top-left
     // corner), merged cells hide their inner borders, and cell text keeps its
     // height, style, alignment and margins).
     let point = |u: f64, v: f64| origin + horizontal * u - vertical * v;

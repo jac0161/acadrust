@@ -45,7 +45,13 @@ impl<'a> DwgObjectWriter<'a> {
         rapid_rt: bool,
         write_predefined_bit: bool,
     ) {
-        let class_version = if rapid_rt && self.dxf_version == crate::types::DxfVersion::AC1027 {
+        // lince (fix O13): the reader adds 1 to an AC1027 RapidRT version, so a
+        // 2013 drawing saved as 2018 must take it off too. AutoCAD 2027's SAVEAS
+        // 2018 of a 2013 file stores 1; with 2 it refuses the file (05 from 2013).
+        let from_2013 = self.document.dwg_source_version == Some(crate::types::DxfVersion::AC1027);
+        let class_version = if rapid_rt
+            && (self.dxf_version == crate::types::DxfVersion::AC1027 || from_2013)
+        {
             value.class_version - 1
         } else if !rapid_rt && self.version.r2013_plus(self.dxf_version) {
             value.class_version + 1

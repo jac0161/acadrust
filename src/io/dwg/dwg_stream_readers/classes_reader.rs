@@ -62,7 +62,10 @@ pub fn read_classes_with_encoding(
     }
 
     // ── Read section size (RL at offset 16) ──
-    let section_size = i32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
+    // lince (fix robustez): read as u32. A negative i32 became a usize near
+    // usize::MAX, `data_start + section_size` wrapped and passed the length
+    // check below, and the slice panicked (found by fuzzing).
+    let section_size = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
 
     // Section data starts after sentinel (16) + size field (4).
     // Extra 4 zero bytes when: (AC1024+ && maintenance > 3) || AC1032+

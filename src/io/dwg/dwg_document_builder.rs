@@ -5215,6 +5215,12 @@ impl DwgDocumentBuilder {
                     // parser used to discard the vertices, leaving the default
                     // boundary on the entity. Without this, clip regions
                     // shrink/expand by orders of magnitude on render.
+                    // lince (fix polygonal image clip): AutoCAD's DWG holds the polygonal ring open; it is closed
+                    // here as in DXF (the writer drops the closing point again).
+                    let mut vertices = data.clip_boundary_vertices;
+                    if data.clip_type != 1 && vertices.len() >= 3 && vertices.first() != vertices.last() {
+                        vertices.push(vertices[0]);
+                    }
                     e.clip_boundary = crate::entities::raster_image::ClipBoundary {
                         clip_type: if data.clip_type == 1 {
                             crate::entities::raster_image::ClipType::Rectangular
@@ -5226,7 +5232,7 @@ impl DwgDocumentBuilder {
                         } else {
                             crate::entities::raster_image::ClipMode::Outside
                         },
-                        vertices: data.clip_boundary_vertices,
+                        vertices,
                     };
                     if data.definition_handle != 0 {
                         e.definition_handle = Some(Handle::from(data.definition_handle));

@@ -533,8 +533,8 @@ fn read_header_fields(r: &mut SectionReader, v: DxfVersion, h: &mut HeaderVariab
     h.model_space_ucs_x_axis = r.read_3bit_double();
     h.model_space_ucs_y_axis = r.read_3bit_double();
 
-    // UCSNAME (MSPACE)
-    let _ = r.read_handle();
+    // UCSNAME (MSPACE) — lince (fix UCSNAME): kept so the current named UCS survives a save.
+    h.model_space_ucs_name_handle = Handle::new(r.read_handle());
 
     if r2000_plus(v) {
         h.ucs_ortho_ref = Handle::new(r.read_handle());

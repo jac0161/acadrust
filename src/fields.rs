@@ -678,7 +678,10 @@ fn cell_value(doc: &CadDocument, table: &Table, col: usize, row: usize, depth: u
             } else {
                 &cv.text
             };
-            let s = s.trim();
+            // lince (fix: a decimal comma reads as a number too, as AutoCAD does with a
+            // comma locale: "2,5" is 2.5).
+            let comma = s.trim().replace(',', ".");
+            let s = if s.contains('.') { s.trim() } else { comma.as_str() };
             match (s.parse::<i32>(), s.parse::<f64>()) {
                 (Ok(n), _) => CellNum::Num(Num::Int(n as i64)),
                 (_, Ok(x)) => CellNum::Num(Num::Real(x)),
@@ -2485,15 +2488,15 @@ impl CadDocument {
         let legacy = t.legacy_style_override.clone().unwrap_or_default();
         let title = !legacy.title_suppressed.unwrap_or(false);
         let header = !legacy.header_suppressed.unwrap_or(false);
-        // (text height, alignment) of a row by its kind: title, header, data.
-        let row_style = |r: usize| {
+        // Kind of a row: 0 title, 1 header, 2 data.
+        let row_kind = |r: usize| {
             // Newer tables name each row's cell style (1 title, 2 header, 3 data).
             let named_kind = t
                 .rows
                 .get(r)
                 .map(|row| row.style_id)
                 .filter(|id| (1..=3).contains(id));
-            let kind = if let Some(id) = named_kind {
+            if let Some(id) = named_kind {
                 (id - 1) as usize
             } else if title && r == 0 {
                 0
@@ -2501,7 +2504,17 @@ impl CadDocument {
                 1
             } else {
                 2
-            };
+            }
+        };
+        // lince (fix: a row's style also brings its text colour, text style and background).
+        let row_format = |r: usize| {
+            style
+                .as_ref()
+                .map(|s| [&s.title_row_style, &s.header_row_style, &s.data_row_style][row_kind(r)].clone())
+        };
+        // (text height, alignment) of a row by its kind: title, header, data.
+        let row_style = |r: usize| {
+            let kind = row_kind(r);
             style.as_ref().map_or((0.18, 5), |s| {
                 // Newer styles keep their rows as the named cell styles.
                 let named = s.modern_overrides.iter().find(|(_, n)| {
@@ -2592,17 +2605,27 @@ impl CadDocument {
                 let own_content = laid.as_deref().and_then(|cell| cell.contents.first());
                 let style_sets = |p: P| own.filter(|s| s.sets(p));
                 let content_sets = |p: P| own_content.filter(|c| c.sets(p));
-                if let Some(s) = style_sets(P::BACKGROUND_COLOR).filter(|s| s.fill_enabled) {
+                let row_fmt = row_format(r);
+                // lince (fix: the row style's background fills its cells too, and the
+                // corners go as AutoCAD writes them: top-left, bottom-left, top-right, bottom-right).
+                let fill = match style_sets(P::BACKGROUND_COLOR) {
+                    Some(s) => s.fill_enabled.then(|| s.background_color.clone()),
+                    None => row_fmt
+                        .as_ref()
+                        .filter(|f| f.fill_enabled)
+                        .map(|f| f.fill_color.clone()),
+                };
+                if let Some(color) = fill {
                     let (w, h) = span[r][c];
                     let (x0, x1, y0, y1) = (xs[c], xs[c + w], -ys[r], -ys[r + h]);
                     let mut solid = Solid::new(
                         Vector3::new(x0, y0, 0.0),
-                        Vector3::new(x1, y0, 0.0),
                         Vector3::new(x0, y1, 0.0),
+                        Vector3::new(x1, y0, 0.0),
                         Vector3::new(x1, y1, 0.0),
                     );
                     by_block(&mut solid.common);
-                    solid.common.color = s.background_color.clone();
+                    solid.common.color = color;
                     fills.push(solid);
                 }
                 let text = cell
@@ -2638,6 +2661,17 @@ impl CadDocument {
                 m.insertion_point = Vector3::new(x, y, 0.0);
                 m.attachment_point = attachment(align);
                 m.drawing_direction = crate::entities::DrawingDirection::ByStyle;
+                if let Some(f) = &row_fmt {
+                    m.common.color = f.text_color.clone();
+                    let name = f
+                        .text_style_handle
+                        .and_then(|h| self.text_styles.iter().find(|st| st.handle == h))
+                        .map(|st| st.name.clone())
+                        .unwrap_or_else(|| f.text_style_name.clone());
+                    if !name.is_empty() && !name.eq_ignore_ascii_case("Standard") {
+                        m.style = name;
+                    }
+                }
                 if let Some(c) = content_sets(P::CONTENT_COLOR) {
                     m.common.color = c.color.clone();
                 }
@@ -3537,6 +3571,17 @@ pub fn field_spans(
     }
     out.push_str(rest);
     (out == text).then_some(spans)
+}
+
+/// lince (fix: the cached text a field shows, without evaluating it, for writers
+/// that keep a table cell's text and not its field (the flat pre-R2007 cell).
+pub(crate) fn cached_field_text(doc: &CadDocument, field: Handle) -> Option<String> {
+    let def = doc.fields.get(&field)?;
+    if def.evaluator == "_text" {
+        fill_template(&def.code, &cached_children(doc, def), false)
+    } else {
+        Some(cached_value(doc, field))
+    }
 }
 
 fn cached_value(doc: &CadDocument, field: Handle) -> String {

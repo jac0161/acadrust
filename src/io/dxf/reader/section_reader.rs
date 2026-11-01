@@ -52,7 +52,7 @@ fn split_proxy_text_data(binary: &[u8], text_data_bits: u32) -> (&[u8], &[u8]) {
     binary.split_at(binary.len() - text_len)
 }
 
-/// cadfv (fix D7b): a pre-R2007 DXF (no 96/162 size group) carries an R2007+
+/// lince (fix D7b): a pre-R2007 DXF (no 96/162 size group) carries an R2007+
 /// proxy's string stream merged into the data bits, as AutoCAD writes it; split
 /// it back so the proxy saves to DWG/DXF R2007+ with its own string stream.
 fn unmerge_proxy_text(
@@ -4814,9 +4814,10 @@ impl<'a> SectionReader<'a> {
             }
             "BLOCKLOOKUPPARAMETER" => DynamicBlockData::LookupParameter(BlockLookupParameter {
                 parameter: dynamic_dxf_one_point(&fields),
-                index: fields.i32("AcDbBlockLookupParameter", 94),
-                lookup_name: fields.text("AcDbBlockLookupParameter", 303),
-                lookup_description: fields.text("AcDbBlockLookupParameter", 304),
+                // lince (fix): AutoCAD's subclass marker is "AcDbBlockLookUpParameter".
+                index: fields.i32("AcDbBlockLookUpParameter", 94),
+                lookup_name: fields.text("AcDbBlockLookUpParameter", 303),
+                lookup_description: fields.text("AcDbBlockLookUpParameter", 304),
             }),
             "BLOCKPOINTPARAMETER" => DynamicBlockData::PointParameter(BlockPointParameter {
                 parameter: dynamic_dxf_one_point(&fields),
@@ -5354,8 +5355,11 @@ impl<'a> SectionReader<'a> {
         Ok(object)
     }
 
-    fn read_object_context_data_dxf(&mut self, dxf_name: &str) -> Result<ObjectContextData> {
+    /// lince (fix bloque de contexto de cota en DXF): devuelve también el nombre del bloque `*D` del contexto de una
+    /// cota (grupo 2), que se resuelve con la tabla de bloques al guardarlo en el documento.
+    fn read_object_context_data_dxf(&mut self, dxf_name: &str) -> Result<(ObjectContextData, Option<String>)> {
         let mut handle = Handle::NULL;
+        let mut nombre_bloque = None;
         let mut owner_handle = Handle::NULL;
         let mut reactors = Vec::new();
         let mut xdictionary_handle = None;
@@ -5416,7 +5420,9 @@ impl<'a> SectionReader<'a> {
                 }
             }
             "ACDB_TEXTOBJECTCONTEXTDATA_CLASS" => {
-                let section = "AcDbTextObjectContextData";
+                // lince (fix contexto de TEXT en DXF): ACAD escribe los grupos tras los de la escala de anotación,
+                // sin marcador; el marcador AcDbTextObjectContextData es de salidas antiguas de acadrust.
+                let section = if fields.has("AcDbTextObjectContextData", 70) { "AcDbTextObjectContextData" } else { "AcDbAnnotScaleObjectContextData" };
                 ObjectContextKind::Text {
                     horizontal_mode: fields.i16(section, 70),
                     rotation: fields.f64(section, 50),
@@ -5488,7 +5494,14 @@ impl<'a> SectionReader<'a> {
             | "ACDB_RADIMLGOBJECTCONTEXTDATA_CLASS"
             | "ACDB_ORDDIMOBJECTCONTEXTDATA_CLASS" => {
                 let section = "AcDbDimensionObjectContextData";
-                let block = fields.handle(section, 2);
+                // ACAD escribe el nombre del bloque (*Dn); las salidas antiguas de acadrust, su handle.
+                let texto_bloque = fields.string(section, 2);
+                let block = if texto_bloque.starts_with('*') {
+                    nombre_bloque = Some(texto_bloque);
+                    Handle::NULL
+                } else {
+                    parse_dxf_handle(&texto_bloque)
+                };
                 let b293 = fields.bool(section, 293);
                 let def_pt = fields.point2(section, 10);
                 let is_def_textloc = fields.bool(section, 294);
@@ -5672,7 +5685,7 @@ impl<'a> SectionReader<'a> {
             _ => ObjectContextKind::Opaque,
         };
 
-        Ok(ObjectContextData {
+        Ok((ObjectContextData {
             handle,
             owner_handle,
             reactors,
@@ -5685,7 +5698,7 @@ impl<'a> SectionReader<'a> {
             is_default,
             scale,
             kind,
-        })
+        }, nombre_bloque))
     }
 
     fn read_class_object_dxf(
@@ -6273,7 +6286,12 @@ impl<'a> SectionReader<'a> {
                 })
             }
             "DATATABLE" | "ACDBDATATABLE" => {
-                let section = "AcDbDataTable";
+                // lince (fix D5b): R2000 DXF (AutoCAD's and ours) marks the
+                // subclass with the DXF name.
+                let section = match name.as_str() {
+                    "ACDBDATATABLE" => "ACDBDATATABLE",
+                    _ => "AcDbDataTable",
+                };
                 let flags = fields.i16(section, 70);
                 let column_count = fields.i32(section, 90).max(0).min(100_000);
                 let row_count = fields.i32(section, 91);
@@ -7153,7 +7171,10 @@ impl<'a> SectionReader<'a> {
                             }
                         }
                         name if is_object_context_name(name) => {
-                            let object = self.read_object_context_data_dxf(name)?;
+                            let (mut object, bloque) = self.read_object_context_data_dxf(name)?;
+                            if let (Some(n), ObjectContextKind::Dim(d)) = (bloque, &mut object.kind) {
+                                d.block = document.block_records.get(&n).map_or(Handle::NULL, |b| b.handle);
+                            }
                             if !object.scale.is_null() {
                                 document.context_scales.insert(object.handle, object.scale);
                             }
@@ -8596,7 +8617,9 @@ impl<'a> SectionReader<'a> {
                     obj.coordinate_projection_radius =
                         pair.as_double().unwrap_or(obj.coordinate_projection_radius)
                 }
-                301 => obj.coordinate_system_definition = pair.value_string,
+                // lince (fix GEODATA): AutoCAD writes the 303 chunks first and the last one as 301; assigning it
+                // dropped the start of the XML.
+                301 => obj.coordinate_system_definition.push_str(&pair.value_string),
                 303 if obj.version == 1 => obj.coordinate_system_datum = pair.value_string,
                 303 => obj
                     .coordinate_system_definition
@@ -10271,7 +10294,7 @@ impl<'a> SectionReader<'a> {
                         reactors.push(Handle::new(h));
                     }
                 }
-                // cadfv (fix F5/08): 332 is a nested xref's BLOCK_RECORD.
+                // lince (fix F5/08): 332 is a nested xref's BLOCK_RECORD.
                 331 | 332 if group == "{BLKREFS" => {
                     if let Ok(h) = u64::from_str_radix(pair.value_string.trim(), 16) {
                         block_record.insert_handles.push(Handle::new(h));
@@ -12157,7 +12180,7 @@ impl<'a> SectionReader<'a> {
         let mut group = String::new();
         let mut owner_seen = false;
         let mut binary = Vec::new();
-        // cadfv (fix D7): AutoCAD's string stream, in its own 311 groups.
+        // lince (fix D7): AutoCAD's string stream, in its own 311 groups.
         let mut text_binary = Vec::new();
         let mut object_data_bits = 0u32;
         let mut text_data_bits = 0u32;
@@ -15151,7 +15174,7 @@ impl<'a> SectionReader<'a> {
         let mut text_size_seen = false;
         let mut proxy_data = Vec::new();
         let mut object_data = Vec::new();
-        // cadfv (fix D7): AutoCAD's string stream, in its own 311 groups.
+        // lince (fix D7): AutoCAD's string stream, in its own 311 groups.
         let mut text_binary = Vec::new();
         let mut object_ids = Vec::new();
         let mut reading_object_data = false;

@@ -161,12 +161,26 @@ pub struct DwgObjectWriter<'a> {
 }
 
 struct ParallelEntityBatch {
+    /// lince (paralelo): handles asignados (vértices, SEQEND) y dueños cambiados de los diccionarios de los ATTRIB.
+    allocated: u64,
+    owner_overrides: std::collections::HashMap<Handle, Handle>,
     output: Vec<u8>,
     handle_map: Vec<(u64, u32)>,
     object_queue: VecDeque<Handle>,
     registered_handles: HashSet<u64>,
     class_instance_counts: HashMap<i16, i32>,
     class_counts_complete: bool,
+}
+
+// lince (paralelo): las pruebas comparan con la escritura en serie.
+#[cfg(test)]
+thread_local!(pub(crate) static SERIE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+fn serie_forzada() -> bool {
+    #[cfg(test)]
+    return SERIE.with(|s| s.get());
+    #[cfg(not(test))]
+    false
 }
 
 impl<'a> DwgObjectWriter<'a> {
@@ -341,7 +355,7 @@ impl<'a> DwgObjectWriter<'a> {
             .insert_handles
             .iter()
             .copied()
-            // cadfv (fix F5/08): an unresolved xref lists its nested xref's
+            // lince (fix F5/08): an unresolved xref lists its nested xref's
             // BLOCK_RECORD here too (DXF `332` in {BLKREFS}). Dropped, AutoCAD
             // purged the nested xref on open ("no guarda referencia y se ha
             // limpiado") instead of keeping it as orphaned, as with the original.
@@ -1944,7 +1958,7 @@ impl<'a> DwgObjectWriter<'a> {
 
     /// Write block begin/entities/end for every block record.
     fn write_block_entities(&mut self) {
-        use crate::io::dwg::parallel::{map_chunks, worker_count};
+        use crate::io::dwg::parallel::{map_chunks_indexed, map_ordered, worker_count};
 
         let block_records: Vec<BlockRecord> = self
             .document
@@ -2002,7 +2016,8 @@ impl<'a> DwgObjectWriter<'a> {
                 // never point at a handle that is not in the stream.
                 let handles = &live_handles;
                 let len = handles.len();
-                let parallel = self.version.r2004_plus() && handles.len() >= 1_024;
+                // lince (paralelo): también antes de R2004; cada lote pone los enlaces prev/next por posición.
+                let parallel = handles.len() >= 1_024 && !serie_forzada();
                 let mut i = 0usize;
                 while i < len {
                     if parallel
@@ -2040,13 +2055,34 @@ impl<'a> DwgObjectWriter<'a> {
                             let worker_count = worker_count();
                             let chunk_size =
                                 ((run.len() + worker_count * 4 - 1) / (worker_count * 4)).max(512);
-                            let batches: Vec<ParallelEntityBatch> =
-                                map_chunks(run, chunk_size, |chunk| {
-                                    self.serialize_parallel_entity_batch(chunk)
-                                });
+                            // lince (paralelo): los lotes con polilíneas o atributos asignan handles a sus
+                            // vértices y SEQEND. Todos empiezan a contar en `inicio`; los que asignan y no son
+                            // los primeros en hacerlo se repiten con su comienzo real (cuántos asigna una
+                            // entidad no depende de dónde empieza la cuenta): sale lo mismo que en serie.
+                            let inicio = self.next_alloc_handle;
+                            let lote = |k: usize, n: usize, desde: u64| {
+                                self.serialize_parallel_entity_batch(handles, start + k * chunk_size, n, desde)
+                            };
+                            let mut batches: Vec<ParallelEntityBatch> =
+                                map_chunks_indexed(run, chunk_size, |k, chunk| lote(k, chunk.len(), inicio));
+                            let mut desde = inicio;
+                            let mut repetir = Vec::new();
+                            for (k, batch) in batches.iter().enumerate() {
+                                if batch.allocated > 0 && desde != inicio {
+                                    repetir.push((k, desde));
+                                }
+                                desde += batch.allocated;
+                            }
+                            let rehechos = map_ordered(repetir, |(k, d)| {
+                                (k, lote(k, chunk_size.min(run.len() - k * chunk_size), d))
+                            });
+                            for (k, batch) in rehechos {
+                                batches[k] = batch;
+                            }
                             for batch in batches {
                                 self.append_parallel_entity_batch(batch);
                             }
+                            self.next_alloc_handle = desde;
                             continue;
                         }
                         for (offset, eh) in run.iter().enumerate() {
@@ -2085,16 +2121,11 @@ impl<'a> DwgObjectWriter<'a> {
         }
     }
 
+    /// lince (paralelo): INSERT y polilíneas también van en lotes (ver `write_block_entities`).
     fn parallel_entity_safe(entity: &EntityType) -> bool {
         !matches!(
             entity,
-            EntityType::Insert(_)
-                | EntityType::Polyline2D(_)
-                | EntityType::Polyline3D(_)
-                | EntityType::PolyfaceMesh(_)
-                | EntityType::PolygonMesh(_)
-                | EntityType::Polyline(_)
-                | EntityType::Solid3D(_)
+            EntityType::Solid3D(_)
                 | EntityType::Region(_)
                 | EntityType::Body(_)
                 | EntityType::Surface(_)
@@ -2103,7 +2134,9 @@ impl<'a> DwgObjectWriter<'a> {
         )
     }
 
-    fn serialize_parallel_entity_batch(&self, handles: &[Handle]) -> ParallelEntityBatch {
+    /// lince (paralelo): el lote son las entidades `ini..ini + n` de `handles` (la lista del bloque, para los enlaces
+    /// prev/next de antes de R2004) y asigna handles desde `alloc`.
+    fn serialize_parallel_entity_batch(&self, handles: &[Handle], ini: usize, n: usize, alloc: u64) -> ParallelEntityBatch {
         let encoding = crate::io::dxf::code_page::encoding_from_dwg_code_page(
             crate::io::dxf::code_page::dwg_code_page_index(&self.document.header.code_page),
         );
@@ -2118,7 +2151,7 @@ impl<'a> DwgObjectWriter<'a> {
             object_queue: VecDeque::new(),
             prev_handle: None,
             next_handle: None,
-            next_alloc_handle: self.next_alloc_handle,
+            next_alloc_handle: alloc,
             model_space_extents: None,
             sab_entries: Vec::new(),
             pending_has_ds_data: false,
@@ -2126,7 +2159,7 @@ impl<'a> DwgObjectWriter<'a> {
             class_instance_counts: HashMap::new(),
             pending_type_code: None,
             class_counts_complete: true,
-            registered_handles: HashSet::with_capacity(handles.len()),
+            registered_handles: HashSet::with_capacity(n),
             raw_excluded_handles: self.raw_excluded_handles.clone(),
             xdic_owner_index: self.xdic_owner_index.clone(),
             block_users: self.block_users.clone(),
@@ -2134,12 +2167,16 @@ impl<'a> DwgObjectWriter<'a> {
             owner_overrides: std::collections::HashMap::new(),
             linetype_handles: std::collections::HashMap::new(),
         };
-        for handle in handles {
-            if let Some(&idx) = worker.document.entity_index.get(handle) {
+        for j in ini..ini + n {
+            if let Some(&idx) = worker.document.entity_index.get(&handles[j]) {
+                worker.prev_handle = (j > 0).then(|| handles[j - 1]);
+                worker.next_handle = (j + 1 < handles.len()).then(|| handles[j + 1]);
                 worker.write_entity(&worker.document.entities[idx]);
             }
         }
         ParallelEntityBatch {
+            allocated: worker.next_alloc_handle - alloc,
+            owner_overrides: worker.owner_overrides,
             output: worker.output,
             handle_map: worker.handle_map,
             object_queue: worker.object_queue,
@@ -2171,6 +2208,7 @@ impl<'a> DwgObjectWriter<'a> {
             *self.class_instance_counts.entry(class_number).or_default() += count;
         }
         self.class_counts_complete &= batch.class_counts_complete;
+        self.owner_overrides.extend(batch.owner_overrides);
     }
 
     /// Write a BLOCK_HEADER (block record) object with explicit entity handles.
@@ -2658,6 +2696,41 @@ mod tests {
     use super::*;
     use crate::entities::Line;
     use crate::objects::{Dictionary, ObjectType};
+
+    /// lince (paralelo): en lotes paralelos (con polilíneas sin handles de vértice, INSERT con atributos y líneas
+    /// mezclados) sale el mismo DWG, byte a byte, que en serie, también antes de R2004 (enlaces prev/next).
+    #[test]
+    fn lotes_paralelos_identicos_a_serie() {
+        use crate::entities::{AttributeEntity, Insert, Polyline2D, Vertex2D};
+        use crate::types::{DxfVersion, Vector3};
+        let mut doc = CadDocument::new();
+        doc.block_records.add(crate::tables::BlockRecord::new("B")).unwrap();
+        for i in 0..5000 {
+            let x = i as f64;
+            let e = match i % 7 {
+                0 => {
+                    let mut p = Polyline2D::new();
+                    (0..1 + i % 4).for_each(|k| p.add_vertex(Vertex2D::new(Vector3::new(x, k as f64, 0.0))));
+                    EntityType::Polyline2D(p)
+                }
+                3 if i % 2 == 1 => {
+                    let mut ins = Insert::new("B", Vector3::new(x, 0.0, 0.0));
+                    ins.attributes.push(AttributeEntity::new("TAG".into(), format!("v{i}")));
+                    EntityType::Insert(ins)
+                }
+                _ => EntityType::Line(Line::from_coords(x, 0.0, 0.0, x + 1.0, 1.0, 0.0)),
+            };
+            doc.add_entity(e).unwrap();
+        }
+        for v in [DxfVersion::AC1014, DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1032] {
+            doc.version = v;
+            SERIE.with(|s| s.set(true));
+            let serie = crate::io::dwg::DwgWriter::write_to_vec(&doc).unwrap();
+            SERIE.with(|s| s.set(false));
+            let paralelo = crate::io::dwg::DwgWriter::write_to_vec(&doc).unwrap();
+            assert!(serie == paralelo, "{v:?}");
+        }
+    }
 
     #[test]
     fn object_writer_creates_for_default_document() {

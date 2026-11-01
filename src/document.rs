@@ -628,6 +628,9 @@ pub struct HeaderVariables {
     pub ucs_base: String,
     /// Model space UCS name
     pub model_space_ucs_name: String,
+    /// UCSNAME (MSPACE) handle of the current named UCS record (lince (fix UCSNAME): read from and written to
+    /// the DWG header; on writing it is resolved from `model_space_ucs_name` when that name is in the UCS table).
+    pub model_space_ucs_name_handle: Handle,
     /// Paper space UCS name  
     pub paper_space_ucs_name: String,
     /// Model space UCS origin
@@ -1070,6 +1073,7 @@ impl Default for HeaderVariables {
             // UCS settings
             ucs_base: String::new(),
             model_space_ucs_name: String::new(),
+            model_space_ucs_name_handle: Handle::NULL,
             paper_space_ucs_name: String::new(),
             model_space_ucs_origin: Vector3::ZERO,
             model_space_ucs_x_axis: Vector3::new(1.0, 0.0, 0.0),
@@ -2277,7 +2281,7 @@ impl CadDocument {
         });
     }
 
-    /// cadfv (fix D1): make sure the R2000+ plot-style placeholder exists.
+    /// lince (fix D1): make sure the R2000+ plot-style placeholder exists.
     ///
     /// Drawings that come from R14 or earlier have no `ACAD_PLOTSTYLENAME`
     /// dictionary, so their layers carry a null plot-style handle. AutoCAD
@@ -4409,19 +4413,35 @@ impl CadDocument {
 
     /// The reactors an image definition lists (DXF Reference, IMAGEDEF):
     /// its owner dictionary, then the IMAGEDEF_REACTOR of each image that
-    /// uses it. The ones a DWG read kept win; a drawing read from DXF, or
-    /// built in code, gets them from its images. AutoCAD lists an image whose
-    /// definition has none as unreferenced.
+    /// uses it. The ones a DWG read kept come first; a drawing read from DXF,
+    /// or built in code, gets them from its images. AutoCAD lists an image
+    /// whose definition has none as unreferenced.
     pub(crate) fn image_definition_reactors(
         &self,
         definition: &crate::objects::ImageDefinition,
     ) -> Vec<Handle> {
-        if let Some(saved) = self.reactors_by_handle.get(&definition.handle) {
-            return saved.clone();
-        }
-        let mut reactors = Vec::new();
-        if !definition.owner.is_null() {
-            reactors.push(definition.owner);
+        // lince (fix imágenes añadidas o borradas en un DWG leído): la lista
+        // guardada se completa con los reactores de las imágenes nuevas y pierde
+        // los que ya no existen, en vez de devolverse tal cual.
+        let mut reactors: Vec<Handle> = self
+            .reactors_by_handle
+            .get(&definition.handle)
+            .map(|saved| {
+                saved
+                    .iter()
+                    .copied()
+                    .filter(|h| {
+                        *h == definition.owner
+                            || matches!(
+                                self.objects.get(h),
+                                Some(ObjectType::ImageDefinitionReactor(_))
+                            )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !definition.owner.is_null() && !reactors.contains(&definition.owner) {
+            reactors.insert(0, definition.owner);
         }
         for entity in self.entities() {
             let EntityType::RasterImage(image) = entity else {

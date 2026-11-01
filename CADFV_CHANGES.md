@@ -30,3 +30,14 @@ Results on a 40-file real-world corpus × 8 output formats: rejected DXF 15 → 
 Update (cadfv 0.0.8-alpha, 2026-10-31): with F2c, D3b, D7b and the R2000 fixes, all copies of the corpus open in AutoCAD 2027; file 08 no longer loses its nested xref.
 
 Update (cadfv 0.0.10-alpha, 2026-10-31): B-r5 and display fixes for multileaders and tables.
+
+Update (Lince2D 0.1.4-beta, 2026-11-01): the program was renamed from cadfv to **Lince2D** (internal name `lince`); new markers read `lince (fix …)`, older ones `cadfv (fix …)`. This publication brings the fork up to date with every change used by Lince2D since 0.0.10-alpha (all of `src/` is the exact copy shipped with the program; files with explicit markers: document.rs document/dynamic_properties.rs document/explode.rs entities/modification/explode/mod.rs entities/modification/explode/tests.rs entities/table.rs fields.rs io/dwg/decompressor_ac21.rs io/dwg/dwg_document_builder.rs io/dwg/dwg_reader.rs io/dwg/dwg_stream_readers/classes_reader.rs io/dwg/dwg_stream_readers/header_reader.rs io/dwg/dwg_stream_writers/header_writer.rs io/dwg/dwg_stream_writers/object_writer/class_object.rs io/dwg/dwg_stream_writers/object_writer/entities.rs io/dwg/dwg_stream_writers/object_writer/mod.rs io/dwg/dwg_stream_writers/object_writer/objects.rs io/dwg/dwg_writer.rs io/dxf/reader.rs io/dxf/reader/section_reader.rs io/dxf/reader/section_reader/table_content.rs io/dxf/writer/section_writer.rs objects/semantic_property.rs objects/table_style.rs tables/dimstyle.rs xdata/mod.rs ). Main areas:
+- Dynamic blocks: public `block_graph`; DXF markers `AcDbBlockLookUpParameter`/`AcDbBlockLookUpGrip` (without them AutoCAD discarded the DXF).
+- Raster images: polygonal clip boundary open in DWG and closed in DXF, as AutoCAD writes it.
+- GEODATA: DXF read/write of the drawing's geographic location.
+- Tables: field text for formulas, legacy cell layout for pre-2007 DWG/DXF with flags in group 91, CELLSTYLEMAP in DXF 2004+, table style margins and extension dictionary link.
+- Annotative objects: TEXT context data in DXF (group 1) and dimension context block written by name (`*Dn`).
+- UCS: `UCSNAME` handle in DWG and `$UCSNAME` in DXF. Gradients not written to R2000 DXF.
+- MLINE explode with mitres and visible segments.
+- Other files differ only by small fixes made while integrating (lint, typos, visibility).
+All changes are validated with AutoCAD 2027 (AUDIT, 0 errors) and the 1637 library tests.

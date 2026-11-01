@@ -1113,6 +1113,78 @@ impl TableCell {
         std::borrow::Cow::Owned(cell)
     }
 
+    /// lince (fix: a cell whose overrides are kept as in DWG — style property bits,
+    /// text height and colour on the content — in the legacy DXF layout: the
+    /// override bits and values on the cell style, as AutoCAD reads them from DXF).
+    pub fn legacy_layout(&self) -> std::borrow::Cow<'_, TableCell> {
+        use CellStylePropertyFlags as P;
+        let content = self.contents.first();
+        // A style with neither the legacy bits nor property flags keeps its override word as
+        // written (raw legacy bits from the API, or a DWG-read R2010 cell, as before).
+        let own = self
+            .style
+            .as_ref()
+            .filter(|s| !s.legacy_override_bits && !s.property_flags.is_empty());
+        let lifts = content.is_some_and(|c| {
+            c.sets(P::TEXT_HEIGHT) || c.sets(P::CONTENT_COLOR) || c.sets(P::TEXT_STYLE)
+        });
+        let raw = self.style.as_ref().is_some_and(|s| s.legacy_override_bits || s.property_flags.is_empty());
+        if (raw && self.style.is_some()) || (own.is_none() && !lifts) {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut cell = self.clone();
+        let mut style = own.cloned().unwrap_or_else(CellStyle::new);
+        let p = own.map_or(P::NONE, |s| s.overridden());
+        let mut bits = 0;
+        if p.contains(P::ALIGNMENT) {
+            bits |= 0x01;
+        }
+        if p.contains(P::BACKGROUND_COLOR) {
+            bits |= 0x02 | 0x04;
+        }
+        if p.contains(P::TEXT_STYLE) {
+            bits |= 0x10;
+        }
+        if let Some(c) = content {
+            if c.sets(P::TEXT_HEIGHT) {
+                bits |= 0x20;
+                style.text_height = c.text_height;
+            }
+            if c.sets(P::CONTENT_COLOR) {
+                bits |= 0x08;
+                style.content_color = c.color;
+            }
+            if c.sets(P::TEXT_STYLE) {
+                bits |= 0x10;
+                style.text_style_handle = c.text_style_handle;
+                style.text_style_name = c.text_style_name.clone();
+            }
+        }
+        for (color_bit, weight_bit, edge, border) in [
+            (0x40, 0x400, CellEdgeFlags::TOP, &style.top_border),
+            (0x80, 0x800, CellEdgeFlags::RIGHT, &style.right_border),
+            (0x100, 0x1000, CellEdgeFlags::BOTTOM, &style.bottom_border),
+            (0x200, 0x2000, CellEdgeFlags::LEFT, &style.left_border),
+        ] {
+            if style.applied_border_edges.contains(edge) {
+                if border.override_flags.contains(BorderPropertyFlags::COLOR) {
+                    bits |= color_bit;
+                }
+                if border
+                    .override_flags
+                    .intersects(BorderPropertyFlags::LINE_WEIGHT | BorderPropertyFlags::INVISIBILITY)
+                {
+                    bits |= weight_bit;
+                }
+            }
+        }
+        style.override_flags = bits;
+        style.legacy_override_bits = true;
+        style.property_flags = legacy_override_properties(bits);
+        cell.style = Some(style);
+        std::borrow::Cow::Owned(cell)
+    }
+
     pub fn set_text(&mut self, s: &str) {
         // Typed text keeps the content's format and is stored as a string
         // value with the flags the reference writes for typed text (6).

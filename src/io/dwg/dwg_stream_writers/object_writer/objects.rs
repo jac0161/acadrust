@@ -351,6 +351,21 @@ impl<'a> DwgObjectWriter<'a> {
         if self.document.dwg_source_version == Some(self.dxf_version) {
             return false;
         }
+        // lince (fix O13): AutoCAD 2027's SAVEAS 2007/2010 of a 2013 drawing
+        // keeps the RAPIDRTRENDERSETTINGS class but no object; with them it
+        // refuses the file (05 from 2013).
+        if self.dxf_version < DxfVersion::AC1027
+            && matches!(object, ObjectType::ClassObject(c) if matches!(c.data, ClassObjectData::RapidRtRenderSettings(_)))
+        {
+            return true;
+        }
+        // lince (fix O14): an ACAD_PROXY_OBJECT_WRAPPER that cannot be turned
+        // back into a proxy (see unwrapped_proxy) is left out of 2000+ files.
+        if let ObjectType::RegisteredClass(r) = object {
+            if r.dxf_name == "ACAD_PROXY_OBJECT_WRAPPER" {
+                return self.unwrapped_proxy(r).is_none();
+            }
+        }
         let class_only = matches!(
             object,
             ObjectType::ObjectContextData(_)
@@ -459,6 +474,11 @@ impl<'a> DwgObjectWriter<'a> {
             ObjectType::DataObject(value) => self.write_data_object(value),
             ObjectType::Field(value) => self.write_field_object(value),
             ObjectType::FieldList(value) => self.write_field_list(value),
+            ObjectType::RegisteredClass(value) if value.dxf_name == "ACAD_PROXY_OBJECT_WRAPPER" => {
+                if let Some(proxy) = self.unwrapped_proxy(value) {
+                    self.write_proxy_object(&proxy);
+                }
+            }
             ObjectType::RegisteredClass(value) => {
                 if value.properties.is_empty()
                     && !self.raw_excluded_handles.contains(&value.handle.value())
@@ -495,6 +515,61 @@ impl<'a> DwgObjectWriter<'a> {
                 }
             }
         }
+    }
+
+    /// lince (fix O14): ACAD_PROXY_OBJECT_WRAPPER only exists in R14. AutoCAD
+    /// 2027's SAVEAS R14 wraps newer objects in it (RapidRT presets,
+    /// MERGE_INFO, UNID_LIST), with the original class number and object
+    /// version in its `AcadProxyRoundTripData` XDATA and the object data
+    /// (string stream merged, as in pre-R2007 proxies) as payload. Its SAVEAS
+    /// 2004/2018 turns each one into a plain proxy object with that class and
+    /// version; written under the wrapper class instead, AutoCAD refuses the
+    /// whole DWG (01 from R14). Its SAVEAS 2000 drops the R2000-version ones
+    /// (MERGE_INFO, UNID_LIST), so they are dropped there too.
+    fn unwrapped_proxy(&self, value: &RegisteredClassObject) -> Option<ProxyObject> {
+        use crate::xdata::XDataValue;
+        if self.dxf_version == DxfVersion::AC1014 || !value.properties.is_empty() {
+            return None;
+        }
+        let xdata = self.document.object_xdata.get(&value.handle)?;
+        let (class_id, version, name) = xdata.records().iter().find_map(|record| match record.values.as_slice() {
+            [XDataValue::String(tag), XDataValue::Integer32(class_id), XDataValue::Integer32(version), _, XDataValue::String(key), XDataValue::String(name), ..]
+                if tag == "AcadProxyRoundTripData" && key == "AcRTDxfName" =>
+            {
+                Some((*class_id, *version, name.as_str()))
+            }
+            _ => None,
+        })?;
+        // The source class number may have been renumbered for this version.
+        let class_id = self
+            .document
+            .classes
+            .get_by_name(name)
+            .map_or(class_id, |class| i32::from(class.class_number));
+        let (dwg_version, maintenance_version) = (version & 0xffff, version >> 16);
+        // AcDb::kDHL_1015 / kDHL_1021: R2000 and R2007 object versions.
+        if self.dxf_version == DxfVersion::AC1015 && dwg_version <= 23 {
+            return None;
+        }
+        let (payload, text_payload) = match value.payload.split_string_stream() {
+            Some(split) if self.version.r2007_plus() && dwg_version >= 27 => split,
+            _ => (value.payload.clone(), ProxyPayload::default()),
+        };
+        Some(ProxyObject {
+            handle: value.handle,
+            owner: value.owner,
+            reactors: value.reactors.clone(),
+            xdictionary_handle: value.xdictionary_handle,
+            proxy_id: 499,
+            class_id,
+            version,
+            dwg_version,
+            maintenance_version,
+            payload,
+            text_payload,
+            object_ids: value.object_ids.clone(),
+            ..Default::default()
+        })
     }
 
     fn write_registered_class_object(&mut self, value: &RegisteredClassObject) {
@@ -1357,77 +1432,12 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_default_modern_table_row_styles(&mut self, value: &TableStyle) {
-        let rows = [
-            (1, &value.title_row_style, 1, 1, "_TITLE", 0x8000),
-            (2, &value.header_row_style, 2, 1, "_HEADER", 0),
-            (3, &value.data_row_style, 3, 2, "_DATA", 0),
-        ];
-
+        let rows = value.default_row_cell_styles(|row| self.resolve_table_row_text_style(row));
         self.writer.write_bit_long(rows.len() as i32);
-        for (key, row, id, style_type, name, merge_flags) in rows {
-            self.writer.write_bit_long(key);
-            self.write_default_modern_table_row_style(row, id, style_type, name, merge_flags);
+        for (key, style) in &rows {
+            self.writer.write_bit_long(*key);
+            self.write_named_table_cell_style(style);
         }
-    }
-
-    fn write_default_modern_table_row_style(
-        &mut self,
-        row: &RowCellStyle,
-        id: i32,
-        style_type: i32,
-        name: &str,
-        merge_flags: i32,
-    ) {
-        // R2010+ edge order; the grid flag is set for a hidden edge, the
-        // reverse of the row border's `is_invisible`.
-        let borders = [
-            (1, &row.top_border),
-            (2, &row.horizontal_inside_border),
-            (4, &row.bottom_border),
-            (8, &row.left_border),
-            (16, &row.vertical_inside_border),
-            (32, &row.right_border),
-        ]
-        .into_iter()
-        .map(|(index_mask, border)| TableGridFormat {
-            index_mask,
-            border: TableCellBorder {
-                is_invisible: !border.is_invisible,
-                ..border.clone()
-            },
-            line_type: Handle::NULL,
-        })
-        .collect();
-
-        self.write_named_table_cell_style(&NamedTableCellStyle {
-            cell_style: TableCellStyleData {
-                style_type: 5,
-                data_flags: 1,
-                merge_flags,
-                background_color: if row.fill_enabled {
-                    row.fill_color
-                } else {
-                    Color::None
-                },
-                content_layout: 1,
-                content_format: TableContentFormat {
-                    value_data_type: row.data_type,
-                    value_unit_type: row.unit_type,
-                    value_format_string: row.format_string.clone(),
-                    block_scale: 1.0,
-                    cell_alignment: row.alignment as i32,
-                    content_color: row.text_color,
-                    text_style: self.resolve_table_row_text_style(row),
-                    text_height: row.text_height,
-                    ..TableContentFormat::default()
-                },
-                borders,
-                ..TableCellStyleData::default()
-            },
-            id,
-            style_type,
-            name: name.to_string(),
-        });
     }
 
     fn resolve_table_row_text_style(&self, row: &RowCellStyle) -> Handle {
@@ -1489,6 +1499,20 @@ impl<'a> DwgObjectWriter<'a> {
         }
     }
 
+    /// lince (fix 08b): VISUALSTYLE and MATERIAL records read from an R14, R2000
+    /// or R2004 DWG (AutoCAD 2027 writes them in all three) share one layout,
+    /// so they can be written to 2000 or 2004. Only same-version saves kept
+    /// them, which emptied ACAD_VISUALSTYLE and ACAD_MATERIAL in e.g. a
+    /// 2000 -> 2004 save; AutoCAD then reported "Paperspace Viewport Visual
+    /// Style Not Valid" (files 04 and 08, and R14 saves of 01, 04, 05, 37).
+    fn pre2007_layout_compatible(&self) -> bool {
+        let target = matches!(self.dxf_version, DxfVersion::AC1015 | DxfVersion::AC1018);
+        let source = |v: DxfVersion| matches!(v, DxfVersion::AC1014 | DxfVersion::AC1015 | DxfVersion::AC1018);
+        self.version.r2007_plus()
+            || self.document.dwg_source_version == Some(self.dxf_version)
+            || (target && self.document.dwg_source_version.is_some_and(source))
+    }
+
     /// Returns `true` when the record at `handle` will be serialized.
     pub(super) fn is_writable_object(&self, handle: &Handle) -> bool {
         match self.document.objects.get(handle) {
@@ -1503,13 +1527,11 @@ impl<'a> DwgObjectWriter<'a> {
             Some(obj) if self.lacks_object_class(obj) => false,
             Some(obj) => match obj {
                 ObjectType::VisualStyle(_) => {
-                    (self.version.r2007_plus()
-                        || self.document.dwg_source_version == Some(self.dxf_version))
+                    self.pre2007_layout_compatible()
                         && self.document.classes.get_by_name("VISUALSTYLE").is_some()
                 }
                 ObjectType::Material(_) => {
-                    (self.version.r2007_plus()
-                        || self.document.dwg_source_version == Some(self.dxf_version))
+                    self.pre2007_layout_compatible()
                         && self.document.classes.get_by_name("MATERIAL").is_some()
                 }
                 ObjectType::TableStyle(_) => {

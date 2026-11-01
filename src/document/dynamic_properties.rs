@@ -34,7 +34,8 @@ impl CadDocument {
             .map(|(_, h)| *h)
     }
 
-    fn block_graph(&self, definition: Handle) -> Option<&BlockEvaluationGraph> {
+    /// Evaluation graph of a dynamic definition (lince (fix): public, to evaluate actions).
+    pub fn block_graph(&self, definition: Handle) -> Option<&BlockEvaluationGraph> {
         let dict = if self.dwg_source_version.is_some() {
             *self.xdic_by_handle.get(&definition)?
         } else {

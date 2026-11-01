@@ -1298,7 +1298,7 @@ mod tests {
     fn roundtrip(data: &[u8]) {
         let compressed = compress_ac21(data);
         let mut decompressed = vec![0u8; data.len()];
-        decompress_ac21(&compressed, 0, compressed.len() as u32, &mut decompressed);
+        decompress_ac21(&compressed, 0, compressed.len() as u32, &mut decompressed).unwrap();
         assert_eq!(
             &decompressed[..],
             data,
@@ -1468,7 +1468,7 @@ mod tests {
             let data: Vec<u8> = (0..size).map(|i| (i * 3 + 7) as u8).collect();
             let compressed = compress_ac21(&data);
             let mut output = vec![0u8; size as usize];
-            decompress_ac21(&compressed, 0, compressed.len() as u32, &mut output);
+            decompress_ac21(&compressed, 0, compressed.len() as u32, &mut output).unwrap();
             assert_eq!(&output, &data, "roundtrip failed for {}-byte input", size);
         }
     }

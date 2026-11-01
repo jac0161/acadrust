@@ -261,7 +261,7 @@ impl DimStyle {
             dimfxl: 1.0,
             dimfxlon: false,
             // Arrows
-            // cadfv (fix cotas): arrow, center mark and text sizes were the imperial
+            // lince (fix cotas): arrow, center mark and text sizes were the imperial
             // 0.18/0.09 while every other value here is ISO-25 metric; ISO-25 uses 2.5.
             dimasz: 2.5,
             dimblk: Handle::NULL,
@@ -302,7 +302,7 @@ impl DimStyle {
             dimlunit: 2,
             dimdec: 2,
             dimrnd: 0.0,
-            // cadfv (fix cotas): ISO-25 uses a decimal comma, as ACAD's acadiso template.
+            // lince (fix cotas): ISO-25 uses a decimal comma, as ACAD's acadiso template.
             dimdsep: 44,
             dimzin: 8,
             // Angular
@@ -361,7 +361,7 @@ impl DimStyle {
     /// suppression, text orientation, precision, placement and line offsets.
     pub fn dxf_defaults(name: impl Into<String>) -> Self {
         DimStyle {
-            // cadfv (fix cotas): the imperial sizes, now that `new` uses ISO-25 ones.
+            // lince (fix cotas): the imperial sizes, now that `new` uses ISO-25 ones.
             dimasz: 0.18,
             dimcen: 0.09,
             dimtxt: 0.18,

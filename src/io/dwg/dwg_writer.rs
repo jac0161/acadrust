@@ -888,11 +888,18 @@ fn prepare_legacy_classes(document: &mut CadDocument) {
     let field_classes = field_classes
         .iter()
         .map(|name| std::borrow::Cow::Owned(name.to_string()));
+    // lince (fix O14): a proxy names its class by number, which the
+    // renumbering below changes; keep that class and its name to remap it.
+    let proxy_classes: Vec<(Handle, String)> = proxy_class_names(document);
+    let proxy_names = proxy_classes
+        .iter()
+        .map(|(_, name)| std::borrow::Cow::Owned(name.clone()));
     let mut seen = std::collections::HashSet::new();
     let required: Vec<_> = entity_classes
         .map(std::borrow::Cow::Borrowed)
         .chain(object_classes)
         .chain(field_classes)
+        .chain(proxy_names)
         .filter_map(|name| document.classes.get_by_name(&name).cloned())
         .filter(|class| seen.insert(class.dxf_name.to_ascii_uppercase()))
         .collect();
@@ -904,6 +911,47 @@ fn prepare_legacy_classes(document: &mut CadDocument) {
             document.classes.add_or_update(class);
         }
     }
+    for (handle, name) in proxy_classes {
+        let number = document.classes.get_by_name(&name).map(|class| i32::from(class.class_number));
+        if let (Some(number), Some(crate::objects::ObjectType::ProxyObject(proxy))) =
+            (number, document.objects.get_mut(&handle))
+        {
+            proxy.class_id = number;
+        }
+    }
+}
+
+/// lince (fix O14): the class each proxy object is written under, by name:
+/// a ProxyObject's `class_id` in the source table, or the class an R14
+/// ACAD_PROXY_OBJECT_WRAPPER holds (its `AcRTDxfName` XDATA), which the
+/// writer turns into a proxy of that class.
+fn proxy_class_names(document: &CadDocument) -> Vec<(Handle, String)> {
+    use crate::objects::ObjectType;
+    use crate::xdata::XDataValue;
+    objects_in_handle_order(document)
+        .into_iter()
+        .filter_map(|(handle, object)| match object {
+            ObjectType::ProxyObject(proxy) => document
+                .classes
+                .iter()
+                .find(|class| i32::from(class.class_number) == proxy.class_id)
+                .map(|class| (handle, class.dxf_name.clone())),
+            ObjectType::RegisteredClass(wrapper) if wrapper.dxf_name == "ACAD_PROXY_OBJECT_WRAPPER" => {
+                let xdata = document.object_xdata.get(&handle)?;
+                xdata.records().iter().find_map(|record| {
+                    let values = &record.values;
+                    let at = values
+                        .iter()
+                        .position(|v| matches!(v, XDataValue::String(s) if s == "AcRTDxfName"))?;
+                    match values.get(at + 1) {
+                        Some(XDataValue::String(name)) => Some((handle, name.clone())),
+                        _ => None,
+                    }
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Class names of objects whose class the table lacks.
@@ -1000,11 +1048,15 @@ fn prepare_legacy_document(document: &mut CadDocument) {
     // in the pre-R2010 record layout. Older saves drop the dictionary and the
     // style object it holds.
     use crate::objects::ObjectType;
-    // cadfv (fix F5/05): AutoCAD 2027's SAVEAS 2000 also keeps them (file 05:
+    // lince (fix F5/05): AutoCAD 2027's SAVEAS 2000 also keeps them (file 05:
     // its MLEADERs keep style 173). Dropped, every MLEADER pointed at a missing
     // style and AUDIT reported 52 errors in the DWG 2000 copy.
     let keep_mleader_style = document.version >= DxfVersion::AC1015
         && document.classes.get_by_name("MLEADERSTYLE").is_some();
+    // lince (fix 04b): likewise ACAD_TABLESTYLE and its TABLESTYLE, which
+    // AutoCAD 2027's SAVEAS 2000 keeps in the root dictionary (files 04, 08).
+    let keep_table_style = document.version >= DxfVersion::AC1015
+        && document.classes.get_by_name("TABLESTYLE").is_some();
     let root_handle = document.header.named_objects_dict_handle;
     let mut obsolete = Vec::new();
     if let Some(ObjectType::Dictionary(root)) = document.objects.get_mut(&root_handle) {
@@ -1012,7 +1064,9 @@ fn prepare_legacy_document(document: &mut CadDocument) {
             let remove = (name == "ACAD_MLEADERSTYLE"
                 && document.version < DxfVersion::AC1021
                 && !keep_mleader_style)
-                || (name == "ACAD_TABLESTYLE" && document.version < DxfVersion::AC1018);
+                || (name == "ACAD_TABLESTYLE"
+                    && document.version < DxfVersion::AC1018
+                    && !keep_table_style);
             if remove {
                 obsolete.push(*handle);
             }
@@ -1395,6 +1449,16 @@ fn prepare_header(
         if !ucs_valid(h.ucs_ortho_ref) {
             h.ucs_ortho_ref = Handle::NULL;
         }
+        // lince (fix UCSNAME): the named UCS that is current, by name (as set in the document) or by the handle
+        // read from a DWG; anything else (unnamed UCS, deleted record) writes NULL.
+        let por_nombre = (!h.model_space_ucs_name.is_empty())
+            .then(|| document.ucss.iter().find(|u| u.name.eq_ignore_ascii_case(&h.model_space_ucs_name)).map(|u| u.handle))
+            .flatten();
+        h.model_space_ucs_name_handle = match por_nombre {
+            Some(handle) => handle,
+            None if h.model_space_ucs_name.is_empty() && ucs_valid(h.model_space_ucs_name_handle) => h.model_space_ucs_name_handle,
+            None => Handle::NULL,
+        };
     }
 
     // ── Resolve and validate dim linetype handles against actual linetypes ──
@@ -3173,7 +3237,9 @@ mod tests {
         let mut expected = doc.classes.clone();
         expected.retain_legacy_dwg_classes();
         assert_eq!(decoded.classes.len(), expected.len());
-        assert_eq!(decoded.objects.len(), 13);
+        // lince (fix F5/05, 04b): R2000 keeps ACAD_MLEADERSTYLE and ACAD_TABLESTYLE with their styles, as AutoCAD's
+        // SAVEAS 2000 does: 4 objects more than upstream.
+        assert_eq!(decoded.objects.len(), 17);
     }
 
     #[test]

@@ -159,12 +159,13 @@ fn decode_ac21_page(
         uncompressed_size as usize + 64,
         "AC21 decompressed page data",
     )?;
+    // lince (fix robustez): a damaged page is an error, not a panic.
     decompress_ac21(
         &padded_source,
         0,
         compressed_size as u32,
         &mut decompressed_data,
-    );
+    )?;
     decompressed_data.truncate(uncompressed_size as usize);
     Ok(decompressed_data)
 }
@@ -2375,7 +2376,7 @@ impl<R: Read + Seek> DwgReader<R> {
         } else {
             // Positive ComprLen means data is LZ77 compressed.
             // Decompress from byte offset 32 in decoded_data.
-            decompress_ac21(&decoded_data, 32, compr_len as u32, &mut metadata_buffer);
+            decompress_ac21(&decoded_data, 32, compr_len as u32, &mut metadata_buffer)?;
         }
 
         // Step 5: Parse compressed metadata (extracts CRC-64)

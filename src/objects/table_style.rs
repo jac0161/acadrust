@@ -700,6 +700,85 @@ impl TableStyle {
         self.flags.set(TableStyleFlags::HEADER_SUPPRESSED, !visible);
     }
 
+    /// The R2010+ `_TITLE`, `_HEADER` and `_DATA` cell styles of the legacy row
+    /// styles, keyed 1, 2 and 3, as written when the style has no named cell
+    /// styles of its own; `text_style` gives each row's text style handle.
+    pub fn default_row_cell_styles(
+        &self,
+        text_style: impl Fn(&RowCellStyle) -> Handle,
+    ) -> Vec<(i32, NamedTableCellStyle)> {
+        let rows = [
+            (1, &self.title_row_style, 1, "_TITLE", 0x8000),
+            (2, &self.header_row_style, 1, "_HEADER", 0),
+            (3, &self.data_row_style, 2, "_DATA", 0),
+        ];
+        rows.into_iter()
+            .map(|(id, row, style_type, name, merge_flags)| {
+                // R2010+ edge order; the grid flag is set for a hidden edge, the
+                // reverse of the row border's `is_invisible`.
+                let borders = [
+                    (1, &row.top_border),
+                    (2, &row.horizontal_inside_border),
+                    (4, &row.bottom_border),
+                    (8, &row.left_border),
+                    (16, &row.vertical_inside_border),
+                    (32, &row.right_border),
+                ]
+                .into_iter()
+                .map(|(index_mask, border)| TableGridFormat {
+                    index_mask,
+                    border: TableCellBorder {
+                        is_invisible: !border.is_invisible,
+                        ..border.clone()
+                    },
+                    line_type: Handle::NULL,
+                })
+                .collect();
+                let cell_style = TableCellStyleData {
+                    style_type: 5,
+                    data_flags: 1,
+                    merge_flags,
+                    background_color: if row.fill_enabled {
+                        row.fill_color
+                    } else {
+                        Color::None
+                    },
+                    content_layout: 1,
+                    content_format: TableContentFormat {
+                        value_data_type: row.data_type,
+                        value_unit_type: row.unit_type,
+                        value_format_string: row.format_string.clone(),
+                        block_scale: 1.0,
+                        cell_alignment: row.alignment as i32,
+                        content_color: row.text_color,
+                        text_style: text_style(row),
+                        text_height: row.text_height,
+                        ..TableContentFormat::default()
+                    },
+                    borders,
+                    // lince (fix: each row cell style carries the style's margins, as
+                    // AutoCAD writes them; without them AutoCAD lays the cells out with
+                    // no margins).
+                    margin_override_flags: 1,
+                    vertical_margin: self.vertical_margin,
+                    horizontal_margin: self.horizontal_margin,
+                    bottom_margin: self.vertical_margin,
+                    right_margin: self.horizontal_margin,
+                    ..TableCellStyleData::default()
+                };
+                (
+                    id,
+                    NamedTableCellStyle {
+                        cell_style,
+                        id,
+                        style_type,
+                        name: name.to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn effective_flags(&self) -> TableStyleFlags {
         let mut flags = self.flags;
         flags.set(TableStyleFlags::TITLE_SUPPRESSED, !self.has_title_row());
@@ -803,10 +882,105 @@ pub(crate) fn restore_table_style_roundtrip(document: &mut crate::document::CadD
     }
 }
 
-pub(crate) fn store_table_style_roundtrip(document: &mut crate::document::CadDocument) {
-    use crate::objects::{
-        CellStyleMap, DataObject, DataObjectData, ObjectType, XRecordEntry, XRecordValue,
+/// lince (fix: AutoCAD keeps a table style's named cell styles in DXF as a
+/// CELLSTYLEMAP in its extension dictionary, also in 2007+ DXF; without it,
+/// AutoCAD lays out the cells of a table read from DXF with no margins). Adds the
+/// map, from the named cell styles or the legacy rows, to each table style that
+/// has none. For a DXF to be written; the DWG writer leaves such maps out.
+pub fn store_table_style_cell_maps(document: &mut crate::document::CadDocument) {
+    use crate::objects::{DataObject, DataObjectData, ObjectType};
+    let standard = document
+        .text_styles
+        .get("Standard")
+        .map(|s| s.handle)
+        .unwrap_or(Handle::NULL);
+    let text_style = |row: &RowCellStyle| {
+        row.text_style_handle
+            .filter(|h| document.text_styles.iter().any(|s| s.handle == *h))
+            .or_else(|| document.text_styles.get(&row.text_style_name).map(|s| s.handle))
+            .unwrap_or(standard)
     };
+    let mut styles: Vec<(Handle, Vec<NamedTableCellStyle>)> = document
+        .objects
+        .iter()
+        .filter_map(|(handle, object)| match object {
+            ObjectType::TableStyle(style) => {
+                let has_map = document
+                    .extension_dictionary_handle(*handle)
+                    .and_then(|d| match document.objects.get(&d) {
+                        Some(ObjectType::Dictionary(d)) => d.get(CELL_STYLE_MAP_KEY),
+                        _ => None,
+                    })
+                    .is_some_and(|m| {
+                        matches!(
+                            document.objects.get(&m),
+                            Some(ObjectType::DataObject(DataObject {
+                                data: DataObjectData::CellStyleMap(_),
+                                ..
+                            }))
+                        )
+                    });
+                let cells = if style.modern_overrides.is_empty() {
+                    style.default_row_cell_styles(text_style)
+                } else {
+                    style.modern_overrides.clone()
+                };
+                (!has_map).then(|| (*handle, cells.into_iter().map(|(_, c)| c).collect()))
+            }
+            _ => None,
+        })
+        .collect();
+    styles.sort_by_key(|style| style.0);
+    for (handle, cells) in styles {
+        insert_cell_style_map(document, handle, cells);
+    }
+}
+
+fn insert_cell_style_map(
+    document: &mut crate::document::CadDocument,
+    handle: Handle,
+    cells: Vec<NamedTableCellStyle>,
+) {
+    use crate::objects::{CellStyleMap, DataObject, DataObjectData, ObjectType};
+    let dictionary = document.ensure_extension_dictionary(handle);
+    let existing = match document.objects.get(&dictionary) {
+        Some(ObjectType::Dictionary(entries)) => entries.get(CELL_STYLE_MAP_KEY),
+        _ => None,
+    };
+    match existing.and_then(|map| document.objects.get_mut(&map)) {
+        Some(ObjectType::DataObject(DataObject {
+            data: DataObjectData::CellStyleMap(map),
+            ..
+        })) => map.cells = cells,
+        _ => {
+            // The map takes its type code from the CELLSTYLEMAP class;
+            // without it the writer leaves the map out.
+            if !document.classes.contains("CELLSTYLEMAP") {
+                if let Some(class) = crate::classes::default_classes()
+                    .into_iter()
+                    .find(|class| class.dxf_name == "CELLSTYLEMAP")
+                {
+                    document.classes.add_or_update(class);
+                }
+            }
+            let map = document.allocate_handle();
+            let mut object = DataObject::new(DataObjectData::CellStyleMap(CellStyleMap { cells }));
+            object.handle = map;
+            object.owner = dictionary;
+            object.reactors = vec![dictionary];
+            document.objects.insert(map, ObjectType::DataObject(object));
+            if let Some(ObjectType::Dictionary(entries)) = document.objects.get_mut(&dictionary) {
+                entries
+                    .entries
+                    .retain(|(name, _)| name != CELL_STYLE_MAP_KEY);
+                entries.add_entry(CELL_STYLE_MAP_KEY, map);
+            }
+        }
+    }
+}
+
+pub(crate) fn store_table_style_roundtrip(document: &mut crate::document::CadDocument) {
+    use crate::objects::{ObjectType, XRecordEntry, XRecordValue};
     use crate::types::DxfVersion;
     if document.version >= DxfVersion::AC1024 {
         return;
@@ -836,43 +1010,7 @@ pub(crate) fn store_table_style_roundtrip(document: &mut crate::document::CadDoc
     // Objects are created in handle order so the output is deterministic.
     styles.sort_by_key(|style| style.0);
     for (handle, cells, row_types) in styles {
-        let dictionary = document.ensure_extension_dictionary(handle);
-        let existing = match document.objects.get(&dictionary) {
-            Some(ObjectType::Dictionary(entries)) => entries.get(CELL_STYLE_MAP_KEY),
-            _ => None,
-        };
-        match existing.and_then(|map| document.objects.get_mut(&map)) {
-            Some(ObjectType::DataObject(DataObject {
-                data: DataObjectData::CellStyleMap(map),
-                ..
-            })) => map.cells = cells,
-            _ => {
-                // The map takes its type code from the CELLSTYLEMAP class;
-                // without it the writer leaves the map out.
-                if !document.classes.contains("CELLSTYLEMAP") {
-                    if let Some(class) = crate::classes::default_classes()
-                        .into_iter()
-                        .find(|class| class.dxf_name == "CELLSTYLEMAP")
-                    {
-                        document.classes.add_or_update(class);
-                    }
-                }
-                let map = document.allocate_handle();
-                let mut object =
-                    DataObject::new(DataObjectData::CellStyleMap(CellStyleMap { cells }));
-                object.handle = map;
-                object.owner = dictionary;
-                object.reactors = vec![dictionary];
-                document.objects.insert(map, ObjectType::DataObject(object));
-                if let Some(ObjectType::Dictionary(entries)) = document.objects.get_mut(&dictionary)
-                {
-                    entries
-                        .entries
-                        .retain(|(name, _)| name != CELL_STYLE_MAP_KEY);
-                    entries.add_entry(CELL_STYLE_MAP_KEY, map);
-                }
-            }
-        }
+        insert_cell_style_map(document, handle, cells);
         if !with_row_types {
             continue;
         }

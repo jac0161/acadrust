@@ -54,20 +54,30 @@ pub(crate) fn polyline2d_downsaves_to_lwpolyline(polyline: &Polyline2D) -> bool 
         && polyline.vertices.iter().all(|v| v.flags.bits() == 0)
 }
 
-/// cadfv (fix D5, D3b): objects AutoCAD's own R2000 DXFOUT omits, and that its
-/// R2000 reader rejects: DATATABLE ("Separación de clases ... ACDBDATATABLE
-/// esperada") and RAPIDRTRENDERSETTINGS ("expected group code 290" in files 17
-/// and 20; AutoCAD writes the class but no object, checked on file 05). They
-/// are also left out of `valid_handles` so no dictionary entry dangles.
+/// lince (fix D3b): objects AutoCAD's own R2000 DXFOUT omits, and that its
+/// R2000 reader rejects: RAPIDRTRENDERSETTINGS ("expected group code 290" in
+/// files 17 and 20; AutoCAD writes the class but no object, checked on file
+/// 05). They are also left out of `valid_handles` so no dictionary entry dangles.
 fn omitted_before_r2004(object: &ObjectType) -> bool {
     matches!(
         object,
         ObjectType::ClassObject(obj) if matches!(
             obj.data,
-            crate::objects::ClassObjectData::DataTable(_)
-                | crate::objects::ClassObjectData::RapidRtRenderSettings(_)
+            crate::objects::ClassObjectData::RapidRtRenderSettings(_)
         )
     )
+}
+
+/// lince (fix D5b): AutoCAD 2027's R2000 DXFOUT names DATATABLE
+/// `ACDBDATATABLE` (class, object and subclass marker; files 10 and 25). With
+/// `AcDbDataTable` its R2000 reader stops ("Separación de clases ...
+/// ACDBDATATABLE esperada"), which is why D5 used to drop the object.
+fn r2000_dxf_name(version: DxfVersion, name: &str) -> &str {
+    if version == DxfVersion::AC1015 && name == "DATATABLE" {
+        "ACDBDATATABLE"
+    } else {
+        name
+    }
 }
 
 /// Legacy application objects that have no complete DXF representation.
@@ -395,7 +405,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             // value on one line with a literal `\P`).
             self.write_header_variable("$ACADMAINTVER", |w| w.write_i32(90, 377))?;
         } else if self.dxf_version == DxfVersion::AC1015 {
-            // cadfv (fix D7b): AutoCAD 2027's R2000 DXFOUT writes 20. With 0 it
+            // lince (fix D7b): AutoCAD 2027's R2000 DXFOUT writes 20. With 0 it
             // loads AutoCAD-correct R2007+ proxies but drops the objects after
             // them (25 AUDIT errors in file 01); with 20 the same file audits clean.
             self.write_header_variable("$ACADMAINTVER", |w| w.write_i16(70, 20))?;
@@ -881,6 +891,8 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
 
         // === UCS ===
         self.write_header_variable("$UNITMODE", |w| w.write_i16(70, hdr.unit_mode))?;
+        // lince (fix UCSNAME): the current named UCS, as AutoCAD writes it (empty for an unnamed UCS).
+        self.write_header_variable("$UCSNAME", |w| w.write_string(2, &hdr.model_space_ucs_name))?;
         self.write_header_variable("$UCSORG", |w| {
             let v = &hdr.model_space_ucs_origin;
             w.write_double(10, v.x)?;
@@ -963,7 +975,8 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
 
         for class in document.classes.iter() {
             self.writer.write_string(0, "CLASS")?;
-            self.writer.write_string(1, &class.dxf_name)?;
+            self.writer
+                .write_string(1, r2000_dxf_name(self.dxf_version, &class.dxf_name))?;
             self.writer.write_string(2, &class.cpp_class_name)?;
             self.writer.write_string(3, &class.application_name)?;
             self.writer.write_i32(90, class.proxy_flags.0 as i32)?;
@@ -1385,7 +1398,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         }
 
         // Plot flag (code 290 is Bool type - single byte in binary).
-        // cadfv (fix D1): AutoCAD rejects a DEFPOINTS layer flagged plottable
+        // lince (fix D1): AutoCAD rejects a DEFPOINTS layer flagged plottable
         // ("Indicador de trazado no válido para la capa DEFPOINTS"); R14 files
         // have no plot flag, so it defaults to true on read.
         let plottable = layer.is_plottable && !layer.name.eq_ignore_ascii_case("DEFPOINTS");
@@ -2003,7 +2016,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             .collect();
         if !references.is_empty() {
             self.writer.write_string(102, "{BLKREFS")?;
-            // cadfv (fix F5/08): a nested xref's BLOCK_RECORD goes in 332 after
+            // lince (fix F5/08): a nested xref's BLOCK_RECORD goes in 332 after
             // the INSERTs (331), as AutoCAD lists it; as 331 AutoCAD purged the
             // nested xref of file 08 on open.
             let is_block = |h: &Handle| document.block_records.iter().any(|b| b.handle == *h);
@@ -3381,8 +3394,13 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 self.writer.write_double(141, value.orientation.y)?;
                 self.writer.write_double(142, value.orientation.z)?;
             }
-            DynamicBlockData::LookupGrip(value)
-            | DynamicBlockData::PolarGrip(value)
+            // lince (fix): AutoCAD expects "AcDbBlockLookUpGrip" (the class
+            // table says "AcDbBlockLookupGrip") and discards the DXF otherwise.
+            DynamicBlockData::LookupGrip(value) => {
+                self.write_dynamic_grip_dxf(value)?;
+                self.writer.write_subclass("AcDbBlockLookUpGrip")?;
+            }
+            DynamicBlockData::PolarGrip(value)
             | DynamicBlockData::RotationGrip(value)
             | DynamicBlockData::VisibilityGrip(value)
             | DynamicBlockData::XYGrip(value)
@@ -3424,7 +3442,9 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             }
             DynamicBlockData::LookupParameter(value) => {
                 self.write_dynamic_one_point_dxf(&value.parameter)?;
-                self.writer.write_subclass("AcDbBlockLookupParameter")?;
+                // lince (fix): AutoCAD expects this exact marker ("LookUp") and
+                // discards the whole DXF on "AcDbBlockLookupParameter".
+                self.writer.write_subclass("AcDbBlockLookUpParameter")?;
                 self.writer.write_i32(94, value.index)?;
                 self.writer.write_string(303, &value.lookup_name)?;
                 self.writer.write_string(304, &value.lookup_description)?;
@@ -4239,12 +4259,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_entity_type("VERTEX")?;
             self.writer.write_handle(5, vertex_handle)?;
             self.writer.write_handle(330, polyline_handle)?;
-            self.writer.write_subclass("AcDbEntity")?;
-            self.writer.write_string(8, &polyline.common.layer)?;
-            // Propagate parent color to vertex so CAD doesn't flag mismatch
-            if polyline.common.color != Color::ByLayer {
-                self.writer.write_color(62, polyline.common.color)?;
-            }
+            self.write_child_entity_props(&polyline.common)?;
             self.writer.write_subclass("AcDbVertex")?;
             self.writer.write_subclass("AcDb3dPolylineVertex")?;
             self.writer.write_point3d(10, vertex.location)?;
@@ -4256,11 +4271,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_entity_type("SEQEND")?;
         self.writer.write_handle(5, seqend_handle)?;
         self.writer.write_handle(330, polyline_handle)?;
-        self.writer.write_subclass("AcDbEntity")?;
-        if self.writing_paper_space {
-            self.writer.write_i16(67, 1)?;
-        }
-        self.writer.write_string(8, &polyline.common.layer)?;
+        self.write_child_entity_props(&polyline.common)?;
 
         Ok(())
     }
@@ -4311,12 +4322,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_entity_type("VERTEX")?;
             self.writer.write_handle(5, vertex_handle)?;
             self.writer.write_handle(330, polyline_handle)?;
-            self.writer.write_subclass("AcDbEntity")?;
-            self.writer.write_string(8, &polyline.common.layer)?;
-            // Propagate parent color to vertex so CAD doesn't flag mismatch
-            if polyline.common.color != Color::ByLayer {
-                self.writer.write_color(62, polyline.common.color)?;
-            }
+            self.write_child_entity_props(&polyline.common)?;
             self.writer.write_subclass("AcDbVertex")?;
             self.writer.write_subclass("AcDb2dVertex")?;
             self.writer.write_point3d(10, vertex.location)?;
@@ -4339,11 +4345,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_entity_type("SEQEND")?;
         self.writer.write_handle(5, seqend_handle)?;
         self.writer.write_handle(330, polyline_handle)?;
-        self.writer.write_subclass("AcDbEntity")?;
-        if self.writing_paper_space {
-            self.writer.write_i16(67, 1)?;
-        }
-        self.writer.write_string(8, &polyline.common.layer)?;
+        self.write_child_entity_props(&polyline.common)?;
 
         Ok(())
     }
@@ -4516,10 +4518,10 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_double(46, h)?;
         }
         // Background fill — only when enabled by the flags.
-        // cadfv (fix D4): background fill is a 2004+ feature; in a R2000 DXF
+        // lince (fix D4): background fill is a 2004+ feature; in a R2000 DXF
         // codes 90/45/421 make AutoCAD fail with "No se leyó datoseX".
         if mtext.background_fill_flags != 0 && self.dxf_version >= DxfVersion::AC1018 {
-            // cadfv (fix D6): same order and completeness as AutoCAD's DXFOUT
+            // lince (fix D6): same order and completeness as AutoCAD's DXFOUT
             // (90, 63, [421], 45, 441). With 45 before 421 and no 63/441, an
             // R2018 reader fails with "No se ha podido analizar el marcador
             // embeddedObject".
@@ -5110,7 +5112,9 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
     }
 
     fn write_hatch_gradient(&mut self, hatch: &Hatch) -> Result<()> {
-        if !hatch.gradient_color.enabled {
+        // lince (fix gradient R2000): gradients (codes 450-470) exist from R2004 on; AutoCAD 2027 refuses to open a
+        // DXF 2000 that has them. Like the DWG writer, older versions keep only the solid fill.
+        if !hatch.gradient_color.enabled || self.dxf_version < DxfVersion::AC1018 {
             return Ok(());
         }
         let gradient = &hatch.gradient_color;
@@ -5471,12 +5475,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_entity_type("VERTEX")?;
             self.writer.write_handle(5, vertex_handle)?;
             self.writer.write_handle(330, polyline_handle)?;
-            self.writer.write_subclass("AcDbEntity")?;
-            self.writer.write_string(8, &vertex.layer)?;
-            // Propagate parent color to vertex so CAD doesn't flag mismatch
-            if polyline.common.color != Color::ByLayer {
-                self.writer.write_color(62, polyline.common.color)?;
-            }
+            self.write_child_entity_props(&polyline.common)?;
             self.writer.write_subclass("AcDbVertex")?;
             self.writer.write_subclass("AcDb3dPolylineVertex")?;
             self.writer.write_point3d(10, vertex.position)?;
@@ -5488,11 +5487,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         let seqend_handle = self.allocate_handle();
         self.writer.write_handle(5, seqend_handle)?;
         self.writer.write_handle(330, polyline_handle)?;
-        self.writer.write_subclass("AcDbEntity")?;
-        if self.writing_paper_space {
-            self.writer.write_i16(67, 1)?;
-        }
-        self.writer.write_string(8, &polyline.common.layer)?;
+        self.write_child_entity_props(&polyline.common)?;
 
         Ok(())
     }
@@ -6186,7 +6181,9 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 ObjectType::UnderlayDefinition(def) => self.write_underlay_definition(def)?,
                 ObjectType::PlotSettings(plotsettings) => self.write_plot_settings(plotsettings)?,
                 ObjectType::MultiLeaderStyle(style) => self.write_multileader_style(style)?,
-                ObjectType::TableStyle(style) => self.write_table_style(style)?,
+                ObjectType::TableStyle(style) => {
+                    self.write_table_style(style, document.extension_dictionary_handle(*handle))?
+                }
                 ObjectType::TableContent(table) => self.write_table_content_object_dxf(table)?,
                 ObjectType::Scale(scale) => self.write_scale(scale)?,
                 ObjectType::ObjectContextData(ctx) => self.write_object_context_data(ctx)?,
@@ -6226,7 +6223,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                     }
                     self.write_associative_object_dxf(obj)?
                 }
-                // cadfv (fix D5, D3b): see omitted_before_r2004.
+                // lince (fix D3b): see omitted_before_r2004.
                 obj if self.dxf_version < DxfVersion::AC1018 && omitted_before_r2004(obj) => {}
                 ObjectType::ClassObject(obj) => self.write_class_object_dxf(obj)?,
                 ObjectType::DataObject(obj) => self.write_data_object_dxf(obj)?,
@@ -6554,11 +6551,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer
                 .write_i32(95, (maintenance_version << 16) | (dwg_version & 0xffff))?;
         }
-        // cadfv (fix D4b): AutoCAD 2027 rejects an R2018 DXF proxy flagged
+        // lince (fix D4b): AutoCAD 2027 rejects an R2018 DXF proxy flagged
         // "originally from DXF" whose payload is DWG binary ("No se leyó
         // datoseX"); the same proxy loads with the flag cleared, and R2000
         // DXF accepts the flag. Tested on real files only for 2000 and 2018.
-        // cadfv (fix D7b): with $ACADMAINTVER 20 (as AutoCAD writes it) the
+        // lince (fix D7b): with $ACADMAINTVER 20 (as AutoCAD writes it) the
         // R2000 reader rejects the flag the same way; cleared, file 35's DXF
         // 2000 audits with 6 errors (original 66, 164 before).
         let flag_ok = self.dxf_version > DxfVersion::AC1015 && self.dxf_version < DxfVersion::AC1032;
@@ -6582,14 +6579,14 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             } else {
                 self.writer.write_i32(96, text_bits as i32)?;
             }
-            // cadfv (fix D7): AutoCAD writes the string stream in its own 311
+            // lince (fix D7): AutoCAD writes the string stream in its own 311
             // groups right after its size, not appended to the 310 data.
             // Appended, AutoCAD 2027 rejects the DXF ("No se leyó datoseX").
             for chunk in text_payload.data().chunks(127) {
                 self.writer.write_binary(311, chunk)?;
             }
         }
-        // cadfv (fix D7b): before R2007 AutoCAD merges an R2007+ string stream
+        // lince (fix D7b): before R2007 AutoCAD merges an R2007+ string stream
         // into the data bits (see ProxyPayload::merged_with_string_stream).
         // Appended as whole bytes after `93` data bits, AutoCAD 2027 dropped every
         // object after the proxy's dictionary (25 AUDIT errors in file 01's DXF 2000).
@@ -6661,7 +6658,8 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         object: &crate::objects::ClassObject,
         subclass: &str,
     ) -> Result<()> {
-        self.writer.write_string(0, object.dxf_name())?;
+        self.writer
+            .write_string(0, r2000_dxf_name(self.dxf_version, object.dxf_name()))?;
         self.writer.write_handle(5, object.handle)?;
         if !object.reactors.is_empty() {
             self.writer.write_string(102, "{ACAD_REACTORS")?;
@@ -6692,7 +6690,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         write_has_predefined: bool,
         rapid_rt: bool,
     ) -> Result<()> {
-        // cadfv (fix D3): AutoCAD 2027's own DXFOUT writes the RapidRT base
+        // lince (fix D3): AutoCAD 2027's own DXFOUT writes the RapidRT base
         // class version minus one for 2018 too, not only for 2013; with the
         // undecremented value it expects an extra 290 ("expected group code 290").
         // R2000 targets keep the stored value (decrementing breaks other files).
@@ -7393,7 +7391,11 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             }
             Data::DataTable(value) => {
                 value.validate()?;
-                self.write_class_object_header(object, "AcDbDataTable")?;
+                let subclass = match self.dxf_version {
+                    DxfVersion::AC1015 => "ACDBDATATABLE",
+                    _ => "AcDbDataTable",
+                };
+                self.write_class_object_header(object, subclass)?;
                 self.writer.write_i16(70, value.flags)?;
                 self.writer.write_i32(90, value.columns.len() as i32)?;
                 self.writer.write_i32(91, value.row_count)?;
@@ -8379,7 +8381,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
     }
 
     /// Write TableStyle object
-    fn write_table_style(&mut self, style: &TableStyle) -> Result<()> {
+    fn write_table_style(&mut self, style: &TableStyle, xdictionary: Option<Handle>) -> Result<()> {
         self.writer.write_string(0, "TABLESTYLE")?;
         if let Some(raw_dxf_codes) = &style.raw_dxf_codes {
             let has_flags = raw_dxf_codes.iter().any(|(code, _)| *code == 71);
@@ -8422,6 +8424,12 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             return Ok(());
         }
         self.writer.write_handle(5, style.handle)?;
+        // lince (fix: the extension dictionary, where AutoCAD keeps the cell style map).
+        if let Some(xdictionary) = xdictionary {
+            self.writer.write_string(102, "{ACAD_XDICTIONARY")?;
+            self.writer.write_handle(360, xdictionary)?;
+            self.writer.write_string(102, "}")?;
+        }
         self.writer.write_handle(330, style.owner_handle)?;
         self.writer.write_subclass("AcDbTableStyle")?;
 
@@ -8566,7 +8574,8 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 insertion,
                 alignment,
             } => {
-                self.writer.write_subclass("AcDbTextObjectContextData")?;
+                // lince (fix contexto de TEXT en DXF): como el de MTEXT, ACAD escribe estos grupos sin el marcador
+                // AcDbTextObjectContextData y rechaza el objeto con él ("Falta el código de grupo DXF: 1").
                 self.writer.write_i16(70, *horizontal_mode)?;
                 self.writer.write_double(50, *rotation)?;
                 self.writer.write_double(10, insertion.x)?;
@@ -8610,7 +8619,12 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             ObjectContextKind::Dim(d) => {
                 self.writer
                     .write_subclass("AcDbDimensionObjectContextData")?;
-                self.writer.write_handle(2, d.block)?;
+                // lince (fix bloque de contexto de cota en DXF): ACAD escribe el nombre del bloque (*Dn) y rechaza un
+                // handle ("Nombre de bloque de cota no válido").
+                match self.block_record_names.get(&d.block) {
+                    Some(n) => self.writer.write_string(2, n)?,
+                    None => self.writer.write_handle(2, d.block)?,
+                }
                 self.writer.write_bool(293, d.b293)?;
                 self.writer.write_double(10, d.def_pt.x)?;
                 self.writer.write_double(20, d.def_pt.y)?;
@@ -9183,8 +9197,17 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_double(142, obj.sea_level_elevation)?;
         self.writer
             .write_double(143, obj.coordinate_projection_radius)?;
-        self.writer
-            .write_string(301, &obj.coordinate_system_definition)?;
+        // lince (fix GEODATA): the definition (MapGuide XML, with line breaks) goes as AutoCAD writes it: 255-char
+        // chunks with code 303 and the last one with 301, newlines as ^J. With write_string the breaks became \P and
+        // AutoCAD no longer recognised the coordinate system.
+        // In R2009 (version 1) code 303 is the datum: one 301.
+        let chars: Vec<char> = obj.coordinate_system_definition.chars().collect();
+        let mut chunks: Vec<String> = if obj.version == 1 { vec![obj.coordinate_system_definition.clone()] } else { chars.chunks(255).map(|c| c.iter().collect()).collect() };
+        let last = chunks.pop().unwrap_or_default();
+        for chunk in &chunks {
+            self.writer.write_xrecord_string(303, chunk)?;
+        }
+        self.writer.write_xrecord_string(301, &last)?;
         if obj.version == 1 {
             self.writer
                 .write_string(303, &obj.coordinate_system_datum)?;
@@ -10967,7 +10990,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         Ok(())
     }
 
-    /// cadfv (fix B-r5): TABLECONTENT values end with `304 ACVALUE_END` only in
+    /// lince (fix B-r5): TABLECONTENT values end with `304 ACVALUE_END` only in
     /// R2007+. AutoCAD 2027's R2000/R2004 DXFOUT writes none, and with
     /// $ACADMAINTVER 20 (fix D7b) its R2000 reader rejects the whole file when
     /// they are present (ErrorStatus=53, corpus file 10).
@@ -11611,6 +11634,15 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         merged_range: Option<&table::CellRange>,
         merged: bool,
     ) -> Result<()> {
+        // lince (fix: cells with DWG-style overrides are written in the legacy layout,
+        // and group 91 carries the override bits, without which AutoCAD ignores them).
+        let laid = cell.legacy_layout();
+        let cell = &*laid;
+        let override_bits = cell
+            .style
+            .as_ref()
+            .filter(|s| s.legacy_override_bits)
+            .map_or(0, |s| s.override_flags & 0x3FFF);
         // Cell type
         self.writer.write_i16(171, cell.cell_type as i16)?;
 
@@ -11634,10 +11666,10 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_i16(175, merge_width as i16)?;
         self.writer.write_i16(176, merge_height as i16)?;
         if self.dxf_version >= DxfVersion::AC1021 {
-            self.writer.write_i32(91, cell.flag)?;
+            self.writer.write_i32(91, cell.flag | override_bits)?;
             self.writer.write_i32(92, cell.state.bits() as i32)?;
         } else {
-            self.writer.write_i16(177, cell.flag as i16)?;
+            self.writer.write_i16(177, (cell.flag | override_bits) as i16)?;
         }
 
         // Virtual edge flag
@@ -11824,8 +11856,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_entity_type("VERTEX")?;
             self.writer.write_handle(5, vertex_handle)?;
             self.writer.write_handle(330, mesh.common.handle)?;
-            self.writer.write_subclass("AcDbEntity")?;
-            self.writer.write_string(8, &vertex.common.layer)?;
+            self.write_child_entity_props(&mesh.common)?;
             self.writer.write_subclass("AcDbVertex")?;
             self.writer.write_subclass("AcDbPolyFaceMeshVertex")?;
 
@@ -11882,11 +11913,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         let seqend_handle = mesh.seqend_handle.unwrap_or_else(|| self.allocate_handle());
         self.writer.write_handle(5, seqend_handle)?;
         self.writer.write_handle(330, mesh.common.handle)?;
-        self.writer.write_subclass("AcDbEntity")?;
-        if self.writing_paper_space {
-            self.writer.write_i16(67, 1)?;
-        }
-        self.writer.write_string(8, &mesh.common.layer)?;
+        self.write_child_entity_props(&mesh.common)?;
 
         Ok(())
     }
@@ -12071,6 +12098,32 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
     }
 
     /// Write SEQEND entity (end-of-sequence marker)
+    /// lince (fix F4): AcDbEntity data of a polyline/mesh child (VERTEX,
+    /// SEQEND). AutoCAD keeps it equal to the owner's, and AUDIT flags each
+    /// vertex whose layer or linetype differs ("layer != owner's"; file 17's
+    /// DXF had millions, so its AUDIT took over 4 minutes). Same rule as the
+    /// DWG writer's write_child_entity_data (fix F5).
+    fn write_child_entity_props(&mut self, parent: &EntityCommon) -> Result<()> {
+        self.writer.write_subclass("AcDbEntity")?;
+        if self.writing_paper_space {
+            self.writer.write_i16(67, 1)?;
+        }
+        self.writer.write_string(8, &parent.layer)?;
+        if parent.has_linetype() {
+            self.writer.write_string(6, &parent.linetype)?;
+        }
+        if parent.color != Color::ByLayer {
+            self.writer.write_color(62, parent.color)?;
+        }
+        if (parent.linetype_scale - 1.0).abs() > 1e-12 {
+            self.writer.write_double(48, parent.linetype_scale)?;
+        }
+        if parent.line_weight != crate::types::LineWeight::ByLayer {
+            self.writer.write_i16(370, parent.line_weight.value())?;
+        }
+        Ok(())
+    }
+
     fn write_seqend(&mut self, seqend: &Seqend, owner: Handle) -> Result<()> {
         self.writer.write_entity_type("SEQEND")?;
         self.write_common_entity_data(&seqend.common, owner)?;
@@ -12155,12 +12208,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             self.writer.write_entity_type("VERTEX")?;
             self.writer.write_handle(5, vertex_handle)?;
             self.writer.write_handle(330, mesh_handle)?;
-            self.writer.write_subclass("AcDbEntity")?;
-            self.writer.write_string(8, &vertex.common.layer)?;
-            // Propagate parent color to vertex so CAD doesn't flag mismatch
-            if mesh.common.color != Color::ByLayer {
-                self.writer.write_color(62, mesh.common.color)?;
-            }
+            self.write_child_entity_props(&mesh.common)?;
             self.writer.write_subclass("AcDbVertex")?;
             self.writer.write_subclass("AcDbPolygonMeshVertex")?;
             self.writer.write_point3d(10, vertex.location)?;
@@ -12174,11 +12222,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_entity_type("SEQEND")?;
         self.writer.write_handle(5, seqend_handle)?;
         self.writer.write_handle(330, mesh_handle)?;
-        self.writer.write_subclass("AcDbEntity")?;
-        if self.writing_paper_space {
-            self.writer.write_i16(67, 1)?;
-        }
-        self.writer.write_string(8, &mesh.common.layer)?;
+        self.write_child_entity_props(&mesh.common)?;
 
         Ok(())
     }
@@ -12428,7 +12472,7 @@ fn wrap_sat_line(line: &str) -> Vec<&str> {
     pieces
 }
 
-/// cadfv (fix D2): some real drawings contain a BLOCK_RECORD with an empty
+/// lince (fix D2): some real drawings contain a BLOCK_RECORD with an empty
 /// name. AutoCAD tolerates it in DWG but refuses the DXF ("Nombre de registro
 /// de tabla de símbolos no válido") — even the DXF AutoCAD itself writes. Give
 /// it a stable anonymous name derived from its handle so the DXF loads.

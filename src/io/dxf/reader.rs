@@ -872,7 +872,7 @@ fn rehandle_colliding_default_entries(
     }
 }
 
-// cadfv (fix F5): DXF files from other programs may omit 330 owners and the
+// lince (fix F5): DXF files from other programs may omit 330 owners and the
 // {ACAD_REACTORS group on OBJECTS (13_i-06 tuberias de ventilación.dxf: the
 // NOD children, MLINESTYLE and LAYOUT records carry no 330). AutoCAD fills
 // them in on load and audits the DXF with 0 errors, but the DWG we wrote kept

@@ -783,7 +783,8 @@ fn test_explode_dimension_uses_dimstyle_geometry_and_formatting() {
             _ => None,
         })
         .expect("dimension text");
-    assert_eq!(text.value, "\\A1;20.0 mm");
+    // lince (fix cotas): DimStyle::new is ISO-25, with a decimal comma (DIMDSEP 44).
+    assert_eq!(text.value, "\\A1;20,0 mm");
     assert_eq!(text.height, 3.0);
     assert_eq!(text.style, "Standard");
 }
@@ -900,7 +901,7 @@ fn test_native_table_graphics_have_grid_and_cell_text() {
     table.set_cell_text(0, 0, "Title");
     table.set_cell_text(1, 0, "A");
     table.set_cell_text(1, 1, "B");
-    // cadfv: title merged across both columns; rows grow downwards.
+    // lince: title merged across both columns; rows grow downwards.
     table.rows[0].cells[0].merge_width = 2;
     let parts = EntityType::Table(Box::new(table)).explode();
     let lines: Vec<_> = parts
@@ -965,6 +966,7 @@ fn test_document_explode_dimension_resolves_dimstyle() {
             _ => None,
         })
         .expect("dimension MTEXT");
-    assert_eq!(text.value, "\\A1;20.0 mm");
+    // lince (fix cotas): DimStyle::new is ISO-25, with a decimal comma (DIMDSEP 44).
+    assert_eq!(text.value, "\\A1;20,0 mm");
     assert!((text.height - 3.0).abs() < 1e-12);
 }

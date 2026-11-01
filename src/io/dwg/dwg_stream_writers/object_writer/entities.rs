@@ -289,7 +289,7 @@ impl<'a> DwgObjectWriter<'a> {
 
     /// Common data of a polyline/mesh child (VERTEX, SEQEND), which the model
     /// does not store per record.
-    // cadfv (fix F5): children were written with linetype "ByLayer", line weight
+    // lince (fix F5): children were written with linetype "ByLayer", line weight
     // ByLayer and scale 1.0 whatever their owner had. AutoCAD keeps them equal to
     // the owner (entget of a VERTEX and SEQEND in the original carries the
     // polyline's "6 . CYPE_PUNTO"), and AUDIT flags each mismatching vertex:
@@ -3581,6 +3581,10 @@ impl<'a> DwgObjectWriter<'a> {
 
     /// Pre-R2010 flat-format cell.
     fn write_table_cell_data(&mut self, cell: &TableCell) {
+        // lince (fix: the flat format keeps the legacy override bits; a cell with
+        // DWG R2010-style overrides is converted first, or its bits misread).
+        let laid = cell.legacy_layout();
+        let cell = &*laid;
         let cell_type = match cell.cell_type {
             CellType::Block => 2,
             // Below R2007 an empty text cell is still a text cell with an empty
@@ -3614,7 +3618,16 @@ impl<'a> DwgObjectWriter<'a> {
             .write_handle(DwgReferenceType::HardPointer, value_handle);
         if cell_type == 1 {
             if !self.version.r2007_plus() && value_handle == 0 {
-                self.writer.write_variable_text(cell.text_value());
+                // lince (fix: a formula or field cell read from a 2007+ file keeps its text
+                // in the field; the flat cell has no field, so it takes the field's text).
+                let field = cell.contents.first().and_then(|c| c.field_handle);
+                let text = match field {
+                    Some(f) if cell.text_value().is_empty() => {
+                        crate::fields::cached_field_text(self.document, f).unwrap_or_default()
+                    }
+                    _ => cell.text_value().to_string(),
+                };
+                self.writer.write_variable_text(&text);
             }
         } else if cell_type == 2 {
             self.writer.write_bit_double(cell.block_scale);
@@ -4034,9 +4047,14 @@ impl<'a> DwgObjectWriter<'a> {
                 }
             }
             ClipType::Polygonal => {
-                // Polygonal clips: count + vertices
-                self.writer.write_bit_long(clip.vertices.len() as i32);
-                for v in &clip.vertices {
+                // Polygonal clips: count + vertices.
+                // lince (fix polygonal image clip): AutoCAD's DWG holds the ring open (the DXF repeats the first
+                // point at the end, and AutoCAD closes the DWG ring itself on load); in memory the ring is closed,
+                // as in DXF, so the closing point is dropped here.
+                let v = &clip.vertices;
+                let n = if v.len() >= 4 && v.first() == v.last() { v.len() - 1 } else { v.len() };
+                self.writer.write_bit_long(n as i32);
+                for v in &v[..n] {
                     self.writer.write_2raw_double(*v);
                 }
             }
@@ -5565,13 +5583,17 @@ impl<'a> DwgObjectWriter<'a> {
         }
         let has_data = acis.has_data();
         self.writer.write_bit(!has_data); // acis_empty (inverted: true = empty)
+        // lince (fix R2000-ACIS): R13-R2000 DWG only carry SAT text (version 1);
+        // AutoCAD 2027 refuses an R2000 DWG whose REGION/3DSOLID holds SAB
+        // (ErrorStatus=53). The SAT branch converts SAB to SAT text.
+        let sab = acis.is_binary && !acis.sab_data.is_empty() && !self.version.r13_15_only();
 
         if has_data {
             // Unknown bit â€” per ODA spec / LibreDWG this B
             // is always present between acis_empty and the version BS.
-            self.writer.write_bit(!acis.is_binary);
+            self.writer.write_bit(!sab);
 
-            if acis.is_binary && !acis.sab_data.is_empty() {
+            if sab {
                 // SAB binary (version 2) â€” write raw bytes directly.
                 self.writer.write_bit_short(2_i16);
                 self.writer.write_bytes(&acis.sab_for_save());
@@ -5850,7 +5872,7 @@ mod tests {
         }
     }
 
-    /// cadfv (fix F5): a VERTEX/SEQEND header must carry its owner's linetype,
+    /// lince (fix F5): a VERTEX/SEQEND header must carry its owner's linetype,
     /// scale and line weight, as AutoCAD writes it (AUDIT: "linetype != owner's").
     #[test]
     fn polyline_children_mirror_owner_display_properties() {

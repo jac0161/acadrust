@@ -15,7 +15,7 @@ use crate::tables::BlockRecord;
 use crate::types::{Handle, Transform, Vector3};
 
 impl CadDocument {
-    /// cadfv (fix: read-only explosion to *display* MLINE and MULTILEADER with
+    /// lince (fix: read-only explosion to *display* MLINE and MULTILEADER with
     /// their style and blocks, without allocating handles; `explode_entity`
     /// needs `&mut self`). A MULTILEADER keeps its landing and filled
     /// arrowhead, which EXPLODE drops or turns into an outline.
@@ -197,18 +197,40 @@ impl CadDocument {
             for i in 0..segment_count {
                 let a = &mline.vertices[i];
                 let b = &mline.vertices[(i + 1) % mline.vertices.len()];
-                let mut start = a.position + a.miter.normalize() * offset;
-                let mut end = b.position + b.miter.normalize() * offset;
+                // lince (fix MLINE): with element parameters, the first one is the distance along the miter (it
+                // already includes justification and the miter length) and the rest are the visible dashes along
+                // the segment (start, end, start..., the last one open to the next vertex), as AutoCAD writes them
+                // after MLEDIT cuts and tees.
+                fn params(v: &crate::entities::MLineVertex, k: usize) -> Option<&[f64]> {
+                    v.segments.get(k).map(|s| s.parameters.as_slice()).filter(|p| !p.is_empty())
+                }
+                let along = |v: &crate::entities::MLineVertex| params(v, element_index).map_or(offset, |p| p[0]);
+                let mut start = a.position + a.miter.normalize() * along(a);
+                let mut end = b.position + b.miter.normalize() * along(b);
                 if !start.x.is_finite() || !start.y.is_finite() || !start.z.is_finite() {
                     start = a.position;
                 }
                 if !end.x.is_finite() || !end.y.is_finite() || !end.z.is_finite() {
                     end = b.position;
                 }
-                let mut line = Line::from_points(start, end);
-                line.common = crate::entities::modification::explode::inherit_common(&mline.common);
-                line.common.color = color;
-                parts.push(EntityType::Line(line));
+                let direction = a.direction.normalize();
+                let length = (end - start).dot(&direction);
+                let dashes: Vec<(Vector3, Vector3)> = match params(a, element_index).map(|p| &p[1..]).filter(|d| !d.is_empty() && direction.x.is_finite() && length.is_finite()) {
+                    Some(d) => d
+                        .chunks(2)
+                        .filter_map(|c| {
+                            let (s, e) = (c[0].clamp(0.0, length), c.get(1).copied().unwrap_or(length).clamp(0.0, length));
+                            (e - s > 1e-9).then(|| (start + direction * s, if c.len() == 1 { end } else { start + direction * e }))
+                        })
+                        .collect(),
+                    None => vec![(start, end)],
+                };
+                for (p, q) in dashes {
+                    let mut line = Line::from_points(p, q);
+                    line.common = crate::entities::modification::explode::inherit_common(&mline.common);
+                    line.common.color = color;
+                    parts.push(EntityType::Line(line));
+                }
             }
         }
         if fill_on && offset_values.len() >= 2 {

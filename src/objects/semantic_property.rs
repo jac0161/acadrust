@@ -118,7 +118,7 @@ impl ProxyPayload {
         }
     }
 
-    /// cadfv (fix D7b): AutoCAD's pre-R2007 DXF form of an R2007+ proxy: the
+    /// lince (fix D7b): AutoCAD's pre-R2007 DXF form of an R2007+ proxy: the
     /// string stream is merged into the data bits as in the DWG object record,
     /// `data + strings + RS size (low byte first) + 1-bit "has strings" flag`
     /// (checked bit for bit against AutoCAD 2027's R2000 DXFOUT of file 01).

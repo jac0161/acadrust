@@ -13,7 +13,7 @@ use super::{append_hex_bytes, parse_dxf_handle, SectionReader};
 impl<'a> SectionReader<'a> {
     fn read_table_value_dxf(&mut self) -> Result<CellValue> {
         let mut value = CellValue::new();
-        // cadfv (fix B-r5): an R2007+ value starts with its flags (93) and ends
+        // lince (fix B-r5): an R2007+ value starts with its flags (93) and ends
         // with 304 ACVALUE_END; a pre-R2007 one is just `90` type + body, with no
         // terminator, so it ends at the first code outside that body.
         let (mut legacy, mut typed) = (None::<bool>, false);
