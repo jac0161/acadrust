@@ -114,7 +114,7 @@ pub use stub_objects::{
     VisualStylePropertyValue, WipeoutVariables,
 };
 pub(crate) use table_style::{restore_table_style_roundtrip, store_table_style_roundtrip};
-pub use table_style::store_table_style_cell_maps;
+pub use table_style::{store_table_style_cell_maps, table_styles_need_cell_maps};
 pub use table_style::{
     CellAlignment, NamedTableCellStyle, RowCellStyle, TableBorderPropertyFlags, TableBorderType,
     TableCellBorder, TableCellStyleData, TableCellStylePropertyFlags, TableContentFormat,

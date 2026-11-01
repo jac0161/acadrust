@@ -64,7 +64,9 @@ fn dwg_block_name<'a>(
     active: Handle,
 ) -> &'a str {
     if record.is_paper_space() {
-        if record.handle == active {
+        // AutoCAD numbers the layout records itself when it reads them (it appends its counter to the stored name:
+        // "*Paper_Space0" came back as "*Paper_Space00"), so every one is written with the bare name, as it does.
+        if record.handle == active || record.name[12..].chars().all(|c| c.is_ascii_digit()) {
             return "*Paper_Space";
         }
         if record.name.eq_ignore_ascii_case("*Paper_Space") {

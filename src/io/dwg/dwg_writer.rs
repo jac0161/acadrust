@@ -1851,7 +1851,7 @@ fn write_ac15<W: Write + Seek>(
     fhw.add_section(section_names::OBJ_FREE_SPACE, obj_free_space);
 
     // ── Section: Template ──
-    let template = build_template(&[], document.header.measurement)?;
+    let template = build_template(&template_description(document, version), document.header.measurement)?;
     fhw.add_section(section_names::TEMPLATE, template);
 
     // ── Section: AuxHeader (uses corrected HANDSEED) ──
@@ -2063,7 +2063,7 @@ fn write_ac18<W: Write + Seek>(
     )?;
 
     // ── Section: Template ──
-    let template = build_template(&[], document.header.measurement)?;
+    let template = build_template(&template_description(document, version), document.header.measurement)?;
     fhw.add_section(output, section_names::TEMPLATE, &template, true, PAGE_SIZE)?;
 
     // ── Section: Handles (last — needs objects data) ──
@@ -2176,7 +2176,7 @@ fn write_ac21_impl<W: Write + Seek>(
     fhw.add_section(output, section_names::OBJ_FREE_SPACE, &obj_free_space)?;
 
     // Template
-    let template = build_template(&[], document.header.measurement)?;
+    let template = build_template(&template_description(document, version), document.header.measurement)?;
     fhw.add_section(output, section_names::TEMPLATE, &template)?;
 
     // Handles (needs objects data for offsets)
@@ -2265,8 +2265,23 @@ fn build_obj_free_space(
 ///
 /// Contains a two-byte description length, the encoded description, and the
 /// two-byte MEASUREMENT value.
-fn build_template(description: &[u8], measurement: i16) -> Result<Vec<u8>> {
-    let description_len = i16::try_from(description.len())
+/// Template description as the Template section stores it: UTF-16LE from
+/// R2007 on, the drawing's code page before. The length prefix counts
+/// characters (UTF-16 units), so the bytes are paired with that count.
+fn template_description(document: &CadDocument, version: DxfVersion) -> (Vec<u8>, usize) {
+    let text = &document.header.template_description;
+    if version >= DxfVersion::AC1021 {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        (units.iter().flat_map(|u| u.to_le_bytes()).collect(), units.len())
+    } else {
+        let bytes = crate::io::dxf::code_page::encode_legacy_string(text, summary_encoding(document));
+        let n = bytes.len();
+        (bytes, n)
+    }
+}
+
+fn build_template((description, chars): &(Vec<u8>, usize), measurement: i16) -> Result<Vec<u8>> {
+    let description_len = i16::try_from(*chars)
         .map_err(|_| DxfError::InvalidFormat("Template description is too long".into()))?;
     if !matches!(measurement, 0 | 1) {
         return Err(DxfError::InvalidFormat(format!(
@@ -3257,18 +3272,18 @@ mod tests {
 
     #[test]
     fn test_build_template() {
-        let t = build_template(&[], 1).unwrap();
+        let t = build_template(&(vec![], 0), 1).unwrap();
         assert_eq!(t.len(), 4);
         assert_eq!(t, [0, 0, 1, 0]);
     }
 
     #[test]
     fn test_build_template_with_description() {
-        let t = build_template(b"metric", 1).unwrap();
+        let t = build_template(&(b"metric".to_vec(), 6), 1).unwrap();
         assert_eq!(&t[..2], &6i16.to_le_bytes());
         assert_eq!(&t[2..8], b"metric");
         assert_eq!(&t[8..], &1i16.to_le_bytes());
-        assert!(build_template(&[], 2).is_err());
+        assert!(build_template(&(vec![], 0), 2).is_err());
     }
 
     #[test]

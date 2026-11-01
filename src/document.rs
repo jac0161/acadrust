@@ -35,6 +35,9 @@ use std::sync::{Arc, Mutex};
 #[cfg(test)]
 #[path = "document/evaluated_block_tests.rs"]
 mod evaluated_block_tests;
+#[cfg(test)]
+#[path = "document/layout_tests.rs"]
+mod layout_tests;
 
 fn material_checker_texture(entries: &[XRecordEntry]) -> Option<MaterialTexture> {
     if !entries.iter().any(|entry| {
@@ -89,6 +92,8 @@ pub use legacy_header::LegacyHeaderState;
 pub use semantic_inventory::*;
 mod block_graph;
 pub use block_graph::BlockGraph;
+mod delta;
+pub use delta::DocumentDelta;
 mod dynamic_properties;
 mod explode;
 mod mirror;
@@ -787,6 +792,9 @@ pub struct HeaderVariables {
     // ==================== Misc ====================
     /// MEASUREMENT - Drawing units (0=English, 1=Metric)
     pub measurement: i16,
+    /// Template description shown by AutoCAD's "Template Options" dialog (DWG
+    /// `AcDb:Template` section, before MEASUREMENT). Not part of DXF.
+    pub template_description: String,
     /// PROXYGRAPHICS - Show proxy graphics
     pub proxy_graphics: i16,
     /// TREEDEPTH - Tree depth for spatial index
@@ -1160,6 +1168,7 @@ impl Default for HeaderVariables {
 
             // Misc
             measurement: 0,
+            template_description: String::new(),
             proxy_graphics: 1,
             tree_depth: 3020,
             multiline_style: String::from("Standard"),
@@ -3940,16 +3949,23 @@ impl CadDocument {
 
         // Determine the next *Paper_Space block name.
         // ACAD uses: *Paper_Space, *Paper_Space0, *Paper_Space1, …
-        let ps_count = self
-            .block_records
-            .iter()
-            .filter(|br| br.is_paper_space())
-            .count();
-        let block_name = if ps_count == 0 {
-            "*Paper_Space".to_string()
-        } else {
-            format!("*Paper_Space{}", ps_count - 1)
-        };
+        // The first free one: after deleting a layout the count no longer
+        // names a free record (it collided with a surviving *Paper_SpaceN).
+        let block_name = std::iter::once("*Paper_Space".to_string())
+            .chain((0..).map(|i| format!("*Paper_Space{i}")))
+            .find(|name| !self.block_records.contains(name))
+            .expect("an unbounded sequence has a free name");
+        // Tabs after the last one (deleted layouts leave gaps in the count).
+        let tab_order = self
+            .objects
+            .values()
+            .filter_map(|obj| match obj {
+                ObjectType::Layout(l) => Some(l.tab_order),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
 
         // Create the block record
         let mut block_record = BlockRecord::new(&block_name);
@@ -3963,7 +3979,7 @@ impl CadDocument {
         let mut layout = crate::objects::Layout::new(name);
         layout.handle = layout_handle;
         layout.owner = self.header.acad_layout_dict_handle;
-        layout.tab_order = ps_count as i16 + 1;
+        layout.tab_order = tab_order;
         layout.block_record = br_handle;
 
         // Link block record → layout

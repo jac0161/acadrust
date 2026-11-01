@@ -5747,7 +5747,10 @@ pub fn read_surface(
         version,
         dxf_version,
         has_ds_data,
-        false,
+        // lince (fix NURBSURFACE R2013+): with `acis_empty_bit` clear, a second modeler body follows the
+        // wireframe block and precedes the materials, as in 3DSOLID; reading it here keeps the materials and
+        // revision in step (AutoCAD 2022 NURBSURFACE saved as 2018 failed to open). The probe rewinds when absent.
+        true,
         false,
         None,
     ) else {

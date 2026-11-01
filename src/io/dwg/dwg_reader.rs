@@ -96,9 +96,26 @@ fn parse_template(data: &[u8], version: crate::types::DxfVersion) -> Result<i16,
     Ok(measurement)
 }
 
+/// Template description that precedes MEASUREMENT in the Template section
+/// (UTF-16LE from R2007 on, the code page before); empty if malformed.
+fn template_text(
+    data: &[u8],
+    version: crate::types::DxfVersion,
+    encoding: crate::io::dxf::code_page::LegacyEncoding,
+) -> String {
+    let n = data.get(..2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]).max(0) as usize);
+    let text = if version >= crate::types::DxfVersion::AC1021 {
+        let units: Vec<u16> = data.get(2..2 + 2 * n).unwrap_or(&[]).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        encoding.decode_without_bom_handling(data.get(2..2 + n).unwrap_or(&[])).0.into_owned()
+    };
+    text.trim_end_matches('\0').to_string()
+}
+
 #[cfg(test)]
 mod template_tests {
-    use super::parse_template;
+    use super::{parse_template, template_text};
     use crate::types::DxfVersion;
 
     #[test]
@@ -115,6 +132,10 @@ mod template_tests {
         assert!(parse_template(&[0xFF, 0xFF, 0, 0], DxfVersion::AC1032).is_err());
         assert!(parse_template(&[3, 0, b'a', b'b', b'c'], DxfVersion::AC1018).is_err());
         assert!(parse_template(&[0, 0, 2, 0], DxfVersion::AC1032).is_err());
+        let ansi = crate::io::dxf::code_page::encoding_from_dwg_code_page(30);
+        assert_eq!(template_text(&[3, 0, b'a', b'b', b'c', 1, 0], DxfVersion::AC1018, ansi), "abc");
+        assert_eq!(template_text(&[2, 0, b'O', 0, b'K', 0, 1, 0], DxfVersion::AC1032, ansi), "OK");
+        assert_eq!(template_text(&[], DxfVersion::AC1032, ansi), "");
     }
 }
 
@@ -1401,7 +1422,11 @@ impl<R: Read + Seek> DwgReader<R> {
         // of insertion units. Older files may omit the section entirely.
         if let Ok(template_buf) = self.get_section_buffer("AcDb:Template", &info) {
             match parse_template(&template_buf, dxf_version) {
-                Ok(measurement) => document.header.measurement = measurement,
+                Ok(measurement) => {
+                    document.header.measurement = measurement;
+                    let encoding = crate::io::dxf::code_page::encoding_from_dwg_code_page(info.code_page);
+                    document.header.template_description = template_text(&template_buf, dxf_version, encoding);
+                }
                 Err(error) if failsafe => report_read_error(
                     &mut self.notifications,
                     &mut diagnostics,

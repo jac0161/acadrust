@@ -882,6 +882,31 @@ pub(crate) fn restore_table_style_roundtrip(document: &mut crate::document::CadD
     }
 }
 
+/// lince (velocidad al guardar DXF): ¿algún estilo de tabla carece del CELLSTYLEMAP que
+/// `store_table_style_cell_maps` le añadiría? Misma condición que la de esa función. Si devuelve `false`,
+/// esa función no cambiaría nada y el escritor DXF puede trabajar sobre el documento sin clonarlo.
+pub fn table_styles_need_cell_maps(document: &crate::document::CadDocument) -> bool {
+    use crate::objects::{DataObject, DataObjectData, ObjectType};
+    document.objects.iter().any(|(handle, object)| {
+        matches!(object, ObjectType::TableStyle(_))
+            && !document
+                .extension_dictionary_handle(*handle)
+                .and_then(|d| match document.objects.get(&d) {
+                    Some(ObjectType::Dictionary(d)) => d.get(CELL_STYLE_MAP_KEY),
+                    _ => None,
+                })
+                .is_some_and(|m| {
+                    matches!(
+                        document.objects.get(&m),
+                        Some(ObjectType::DataObject(DataObject {
+                            data: DataObjectData::CellStyleMap(_),
+                            ..
+                        }))
+                    )
+                })
+    })
+}
+
 /// lince (fix: AutoCAD keeps a table style's named cell styles in DXF as a
 /// CELLSTYLEMAP in its extension dictionary, also in 2007+ DXF; without it,
 /// AutoCAD lays out the cells of a table read from DXF with no margins). Adds the

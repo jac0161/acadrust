@@ -97,9 +97,9 @@ pub trait TableEntry {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Table<T: TableEntry> {
     /// Entries stored by name (case-insensitive)
-    entries: IndexMap<String, T>,
+    pub(crate) entries: IndexMap<String, T>,
     /// Table handle
-    handle: Handle,
+    pub(crate) handle: Handle,
 }
 
 impl<T: TableEntry> Table<T> {
