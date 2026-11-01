@@ -46,6 +46,33 @@ impl DwgObjectWriter<'_> {
         })
     }
 
+    /// lince (fix F2b): the class body of an Arch object read from a DWG, as
+    /// proxy data (data, strings and references in its source version).
+    pub(crate) fn architecture_object_proxy_body(
+        object: &ArchObject,
+    ) -> Option<(ProxyPayload, ProxyPayload, Vec<ProxyObjectReference>)> {
+        let body = Self::architecture_object_body(object, object.raw_dwg_version?).ok()?;
+        Some((body.payload, body.text, body.references))
+    }
+
+    /// lince (fix F2b): reactors, extension dictionary and proxy data of an
+    /// undecoded custom object record read from a DWG of `version`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn raw_object_proxy_body(
+        raw: &[u8],
+        handle_bits: i64,
+        version: DxfVersion,
+    ) -> Option<(Vec<Handle>, Option<Handle>, ProxyPayload, ProxyPayload, Vec<ProxyObjectReference>)> {
+        let objects = DwgObjectReader::new(Vec::new(), version, Default::default()).ok()?;
+        let (type_code, mut reader) = objects.read_raw_record(raw, handle_bits).ok()?;
+        let common = objects.read_common_non_entity_data(&mut reader, type_code);
+        reader.check_error().ok()?;
+        let (payload, text, references) = read_proxy_payload(&mut reader, common.common.handle);
+        reader.check_error().ok()?;
+        let reactors = common.reactors.iter().map(|h| Handle::from(*h)).collect();
+        Some((reactors, common.xdictionary_handle.map(Handle::from), payload, text, references))
+    }
+
     pub(crate) fn validate_architecture_object(
         object: &ArchObject,
         version: DxfVersion,

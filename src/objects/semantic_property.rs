@@ -151,6 +151,29 @@ impl ProxyPayload {
         Some((bits_to_payload(&bits[..start]), bits_to_payload(&bits[start..n - 17])))
     }
 
+    /// lince (fix F2b): the data and string-stream payloads of a proxy as a
+    /// DWG of the target version holds them. Before R2007 there is no string
+    /// stream: an R2007+ proxy's strings are merged into the data as AutoCAD
+    /// 2027's SAVEAS 2000/2004 does. From R2007 on, an R2007+ object
+    /// (`dwg_version` 27 or more) read from an older file is split back.
+    /// Written unchanged, the old-format record makes AutoCAD refuse the DWG.
+    pub fn for_dwg_version(
+        data: &ProxyPayload,
+        text: &ProxyPayload,
+        dwg_version: i32,
+        r2007_plus: bool,
+    ) -> (ProxyPayload, ProxyPayload) {
+        if !r2007_plus && text.bit_count > 0 {
+            return (data.merged_with_string_stream(text), ProxyPayload::default());
+        }
+        if r2007_plus && text.bit_count == 0 && dwg_version >= 27 {
+            if let Some(split) = data.split_string_stream() {
+                return split;
+            }
+        }
+        (data.clone(), text.clone())
+    }
+
     pub fn data(&self) -> Vec<u8> {
         let mut records: Vec<&ProxyPayloadRecord> = self.records.iter().collect();
         records.sort_by_key(|record| record.sequence);

@@ -542,14 +542,14 @@ impl<'a, W: DxfStreamWriter> R12Writer<'a, W> {
             if st.flags.upside_down {
                 generation |= 4;
             }
-            // R12 only knows SHX fonts; TrueType names are kept as the font file
-            let font = if !st.font_file.is_empty() {
-                st.font_file.clone()
-            } else if !st.true_type_font.is_empty() {
-                st.true_type_font.clone()
-            } else {
-                "txt".to_string()
-            };
+            // lince (fix F-06): R12 only knows SHX fonts. AutoCAD 2027's SAVEAS
+            // R12 writes "txt" for TrueType styles; a TrueType family or .ttf
+            // file there makes its AUDIT report the style (4 errors in 01).
+            let shx = !st.font_file.is_empty()
+                && !st.font_file.to_ascii_lowercase().ends_with(".ttf")
+                && !st.font_file.to_ascii_lowercase().ends_with(".otf")
+                && st.true_type_font.is_empty();
+            let font = if shx { st.font_file.clone() } else { "txt".to_string() };
             let w = &mut *self.writer;
             w.write_string(0, "STYLE")?;
             w.write_string(2, &name)?;
@@ -603,6 +603,9 @@ impl<'a, W: DxfStreamWriter> R12Writer<'a, W> {
             w.write_string(0, "DIMSTYLE")?;
             w.write_string(2, "STANDARD")?;
             w.write_i16(70, 0)?;
+            for code in 3..=7 {
+                w.write_string(code, "")?;
+            }
         }
         for ds in records {
             let name = self
@@ -616,6 +619,16 @@ impl<'a, W: DxfStreamWriter> R12Writer<'a, W> {
             w.write_i16(70, 0)?;
             w.write_string(3, &ds.dimpost)?;
             w.write_string(4, &ds.dimapost)?;
+            // lince (fix F-06): AutoCAD 2027 refuses an R12 DIMSTYLE without
+            // its DIMBLK/DIMBLK1/DIMBLK2 names (empty = default arrow).
+            let arrows: Vec<String> = [&ds.dimblk_name, &ds.dimblk1_name, &ds.dimblk2_name]
+                .iter()
+                .map(|b| self.blocks.get(b).unwrap_or("").to_string())
+                .collect();
+            let w = &mut *self.writer;
+            for (code, block) in [5, 6, 7].into_iter().zip(&arrows) {
+                w.write_string(code, block)?;
+            }
             w.write_double(40, if ds.dimscale > 0.0 { ds.dimscale } else { 1.0 })?;
             w.write_double(41, ds.dimasz)?;
             w.write_double(42, ds.dimexo)?;

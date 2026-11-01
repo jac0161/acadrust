@@ -829,14 +829,21 @@ impl<'a> DwgObjectWriter<'a> {
         if self.version.r2000_plus() {
             self.writer.write_bit(value.from_dxf);
         }
-        let payload = value.payload.data();
-        for bit_index in 0..value.payload.bit_count as usize {
+        // lince (fix F2b): string stream merged or split for the target version.
+        let (payload_bits, text_bits) = ProxyPayload::for_dwg_version(
+            &value.payload,
+            &value.text_payload,
+            value.dwg_version,
+            self.version.r2007_plus(),
+        );
+        let payload = payload_bits.data();
+        for bit_index in 0..payload_bits.bit_count as usize {
             let byte = payload.get(bit_index / 8).copied().unwrap_or(0);
             self.writer
                 .write_bit((byte & (0x80 >> (bit_index % 8))) != 0);
         }
-        let text_payload = value.text_payload.data();
-        for bit_index in 0..value.text_payload.bit_count as usize {
+        let text_payload = text_bits.data();
+        for bit_index in 0..text_bits.bit_count as usize {
             let byte = text_payload.get(bit_index / 8).copied().unwrap_or(0);
             self.writer
                 .write_text_bit((byte & (0x80 >> (bit_index % 8))) != 0);

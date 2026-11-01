@@ -41,3 +41,5 @@ Update (Lince2D 0.1.4-beta, 2026-11-01): the program was renamed from cadfv to *
 - MLINE explode with mitres and visible segments.
 - Other files differ only by small fixes made while integrating (lint, typos, visibility).
 All changes are validated with AutoCAD 2027 (AUDIT, 0 errors) and the 1637 library tests.
+
+Update (Lince2D 0.1.5-beta, 2026-11-01): proxies when saving to another version (`lince (fix F2b)`): the proxy string stream is merged into the data for 2000/2004 and split again from 2007, as AutoCAD does; entity proxies keep their class when classes are renumbered; `custom_records_as_proxies` writes AutoCAD Architecture (AEC) objects and undecoded objects (BINRECORD) as proxies of their class with their graphics; SCALE proxies become native scales. DXF R12 output (`lince (fix F-06)`): dimension style arrow block names (DIMBLK, DIMBLK1, DIMBLK2), TrueType text styles written as `txt`, AEC objects omitted. Validated with AutoCAD 2027 (DXF R12 of 12 corpus files open with 0 AUDIT errors; full corpus regression: 288 copies, 0 worse) and the 1637 library tests.

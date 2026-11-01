@@ -156,7 +156,7 @@ impl<'a> DxfWriter<'a> {
     }
 
     /// Arch records a non-R12 save leaves out. Empty when the target is R12,
-    /// because that save fails instead of omitting them.
+    /// whose writer leaves out every object (lince fix F-06).
     pub fn omitted_architecture_records(&self) -> Vec<DxfOmission> {
         if self.version == Some(crate::types::DxfVersion::AC1009) {
             return Vec::new();
@@ -222,29 +222,11 @@ impl<'a> DxfWriter<'a> {
         Ok(())
     }
 
+    /// lince (fix F-06): AutoCAD 2027's SAVEAS R12 DXF leaves out the objects
+    /// of applications R12 cannot hold (AutoCAD Architecture included) instead
+    /// of failing; the R12 writer never writes objects and decomposes Arch
+    /// entities like any other entity R12 lacks.
     fn validate_architecture_records(&self) -> Result<()> {
-        if self.version != Some(crate::types::DxfVersion::AC1009) {
-            return Ok(());
-        }
-        let reason = "R12 does not support Arch classes";
-        for entity in self.document.entities() {
-            if let EntityType::Extended(entity) = entity {
-                if let ExtendedEntityData::Arch(data) = &entity.data {
-                    return Err(crate::error::DxfError::NotImplemented(format!(
-                        "Cannot export Arch entity {} at handle {} to DXF: {reason}; save as the source DWG version to preserve its payload",
-                        data.dxf_name, entity.common.handle,
-                    )));
-                }
-            }
-        }
-        for object in self.document.objects.values() {
-            if let ObjectType::Arch(object) = object {
-                return Err(crate::error::DxfError::NotImplemented(format!(
-                    "Cannot export Arch object {} at handle {} to DXF: {reason}; save as the source DWG version to preserve its payload",
-                    object.dxf_name, object.handle,
-                )));
-            }
-        }
         Ok(())
     }
 

@@ -891,9 +891,28 @@ fn prepare_legacy_classes(document: &mut CadDocument) {
     // lince (fix O14): a proxy names its class by number, which the
     // renumbering below changes; keep that class and its name to remap it.
     let proxy_classes: Vec<(Handle, String)> = proxy_class_names(document);
+    // lince (fix F2b): proxy entities name their class by number too.
+    let old_names: std::collections::HashMap<i32, String> = document
+        .classes
+        .iter()
+        .map(|class| (i32::from(class.class_number), class.dxf_name.clone()))
+        .collect();
+    let entity_proxy_classes: Vec<String> = document
+        .entities()
+        .filter_map(|entity| match entity {
+            crate::entities::EntityType::Extended(e) => match &e.data {
+                crate::entities::ExtendedEntityData::Proxy(proxy) => old_names.get(&proxy.class_id).cloned(),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let proxy_names = proxy_classes
         .iter()
-        .map(|(_, name)| std::borrow::Cow::Owned(name.clone()));
+        .map(|(_, name)| std::borrow::Cow::Owned(name.clone()))
+        .chain(entity_proxy_classes.iter().map(|name| std::borrow::Cow::Owned(name.clone())));
     let mut seen = std::collections::HashSet::new();
     let required: Vec<_> = entity_classes
         .map(std::borrow::Cow::Borrowed)
@@ -919,6 +938,211 @@ fn prepare_legacy_classes(document: &mut CadDocument) {
             proxy.class_id = number;
         }
     }
+    // lince (fix F2b): the same for proxy entities.
+    let numbers: std::collections::HashMap<&str, i32> = entity_proxy_classes
+        .iter()
+        .filter_map(|name| Some((name.as_str(), i32::from(document.classes.get_by_name(name)?.class_number))))
+        .collect();
+    if !numbers.is_empty() {
+        for entity in document.entities_mut() {
+            if let crate::entities::EntityType::Extended(e) = entity {
+                if let crate::entities::ExtendedEntityData::Proxy(proxy) = &mut e.data {
+                    if let Some(number) = old_names.get(&proxy.class_id).and_then(|n| numbers.get(n.as_str())) {
+                        proxy.class_id = *number;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// lince (fix F2b): an AcDbScale (BS, TV name, BD paper units, BD drawing
+/// units, B unit scale) stored as proxy data in its source version.
+fn scale_from_proxy(proxy: &crate::objects::ProxyObject) -> Option<crate::objects::Scale> {
+    use super::dwg_stream_readers::bit_reader::DwgBitReader;
+    use super::dwg_version::DwgVersion;
+    let split = proxy.dwg_version >= 27 && proxy.text_payload.bit_count > 0;
+    let dxf = if split { DxfVersion::AC1021 } else { DxfVersion::AC1018 };
+    let version = DwgVersion::from_dxf_version(dxf).ok()?;
+    let mut main = DwgBitReader::new(proxy.payload.data(), version, dxf);
+    let (name, paper_units, drawing_units, is_unit_scale);
+    // The SCALE proxies of 35 hold DXF-filer data: BL 499, BL class, then
+    // (BS group code, value) pairs: 100 AcDbScale, 70, 300 name, 140, 141, 290.
+    if main.read_bit_long() == 499 && main.read_bit_long() == proxy.class_id {
+        let (mut n, mut p, mut d, mut u) = (None, None, None, false);
+        for _ in 0..16 {
+            match main.read_bit_short() {
+                100 | 300 => {
+                    let s = main.read_variable_text();
+                    if n.is_none() && !s.starts_with("AcDb") {
+                        n = Some(s);
+                    }
+                }
+                70 => {
+                    main.read_bit_short();
+                }
+                140 => p = Some(main.read_bit_double()),
+                141 => d = Some(main.read_bit_double()),
+                290 => {
+                    u = main.read_bit();
+                    break;
+                }
+                _ => break,
+            }
+        }
+        (name, paper_units, drawing_units, is_unit_scale) = (n?, p?, d?, u);
+    } else {
+        main.set_position_in_bits(0);
+        main.read_bit_short();
+        name = if split {
+            DwgBitReader::new(proxy.text_payload.data(), version, dxf).read_variable_text()
+        } else {
+            main.read_variable_text()
+        };
+        (paper_units, drawing_units, is_unit_scale) = (main.read_bit_double(), main.read_bit_double(), main.read_bit());
+    }
+    let valid = paper_units.is_finite() && drawing_units.is_finite() && paper_units > 0.0 && drawing_units > 0.0;
+    (valid && !name.is_empty() && main.position_in_bits() as u32 <= proxy.payload.bit_count).then(|| crate::objects::Scale {
+        handle: proxy.handle,
+        owner_handle: proxy.owner,
+        name,
+        paper_units,
+        drawing_units,
+        is_unit_scale,
+        is_temporary: false,
+    })
+}
+
+/// lince (fix F2b): turns the AutoCAD Architecture/Civil records of a DWG read
+/// from another version into proxy objects and entities of their class, as
+/// AutoCAD does without the application: their bodies are only valid in the
+/// source version, and as proxies they carry that version (`dwg_version`) so
+/// an application that knows the class can still read them. Entities keep
+/// their proxy graphics. Returns how many records were converted; the others
+/// (no DWG body, or one that does not decode) are left as they are.
+pub fn custom_records_as_proxies(document: &mut CadDocument, target: DxfVersion) -> usize {
+    use crate::entities::{EntityType, ExtendedEntityData, ProxyEntityData};
+    use crate::io::dwg::dwg_stream_writers::aux_header_writer::{
+        dwg_internal_version, dwg_maintenance_version,
+    };
+    use crate::io::dwg::dwg_stream_writers::DwgObjectWriter;
+    use crate::objects::{ObjectType, ProxyObject, ProxyPayload};
+    let classes = document.classes.clone();
+    let class_id = |name: &str| classes.get_by_name(name).map(|class| i32::from(class.class_number));
+    let versions = |source: DxfVersion| {
+        let (dwg, maintenance) = (
+            i32::from(dwg_internal_version(source)),
+            i32::from(dwg_maintenance_version(source)),
+        );
+        (dwg, maintenance, (maintenance << 16) | dwg)
+    };
+    let mut converted = 0;
+    for (handle, object) in document.objects.iter_mut() {
+        // SCALE proxies (written by applications without the class) become
+        // native scales, as AutoCAD 2027 reads and saves them: as proxies of a
+        // class AutoCAD knows, a DWG 2007+ copy does not open (35 from 2004).
+        if let ObjectType::ProxyObject(proxy) = object {
+            let is_scale = classes
+                .iter()
+                .any(|c| i32::from(c.class_number) == proxy.class_id && c.dxf_name.eq_ignore_ascii_case("SCALE"));
+            if is_scale {
+                if let Some(scale) = scale_from_proxy(proxy) {
+                    *object = ObjectType::Scale(scale);
+                    converted += 1;
+                }
+            }
+            continue;
+        }
+        // Custom objects acadrust does not decode at all (BINRECORD...).
+        if let ObjectType::Unknown { type_name, owner, raw_dwg_data: Some(raw), raw_dwg_handle_bits, raw_dwg_version: Some(source), .. } = object {
+            if *source == target {
+                continue;
+            }
+            let Some(class_id) = class_id(type_name) else { continue };
+            let Some((reactors, xdictionary_handle, payload, text_payload, object_ids)) =
+                DwgObjectWriter::raw_object_proxy_body(raw, *raw_dwg_handle_bits, *source)
+            else {
+                continue;
+            };
+            let (dwg_version, maintenance_version, version) = versions(*source);
+            *object = ObjectType::ProxyObject(ProxyObject {
+                handle: *handle,
+                owner: *owner,
+                reactors,
+                xdictionary_handle,
+                proxy_id: 499,
+                class_id,
+                version,
+                dwg_version,
+                maintenance_version,
+                payload,
+                text_payload,
+                object_ids,
+                ..Default::default()
+            });
+            converted += 1;
+            continue;
+        }
+        let ObjectType::Arch(arch) = object else { continue };
+        let Some(source) = arch.raw_dwg_version.filter(|v| *v != target) else { continue };
+        let Some(class_id) = class_id(&arch.dxf_name) else { continue };
+        let Some((payload, text_payload, object_ids)) = DwgObjectWriter::architecture_object_proxy_body(arch) else {
+            continue;
+        };
+        let (dwg_version, maintenance_version, version) = versions(source);
+        *object = ObjectType::ProxyObject(ProxyObject {
+            handle: *handle,
+            owner: arch.owner,
+            reactors: arch.reactors.clone(),
+            xdictionary_handle: arch.xdictionary_handle,
+            proxy_id: 499,
+            class_id,
+            version,
+            dwg_version,
+            maintenance_version,
+            payload,
+            text_payload,
+            object_ids,
+            ..Default::default()
+        });
+        converted += 1;
+    }
+    let arch_entities: Vec<Handle> = document
+        .entities()
+        .filter(|e| matches!(e, EntityType::Extended(x) if matches!(x.data, ExtendedEntityData::Arch(_))))
+        .map(|e| e.common().handle)
+        .collect();
+    for handle in arch_entities {
+        let Some(EntityType::Extended(extended)) = document.get_entity_mut(handle) else { continue };
+        let ExtendedEntityData::Arch(data) = &extended.data else { continue };
+        let Some(source) = data.dwg_source_version.filter(|v| *v != target) else { continue };
+        let Some(class_id) = class_id(&data.dxf_name) else { continue };
+        let Some((payload, text_payload, object_ids)) = DwgObjectWriter::architecture_entity_proxy_body(data) else {
+            continue;
+        };
+        let (dwg_version, maintenance_version, version) = versions(source);
+        let graphics = extended
+            .common
+            .graphic_data
+            .as_deref()
+            .map(ProxyPayload::from_bytes)
+            .unwrap_or_default();
+        extended.data = ExtendedEntityData::Proxy(ProxyEntityData {
+            proxy_id: 498,
+            class_id,
+            dxf_subclass: String::new(),
+            version,
+            dwg_version,
+            maintenance_version,
+            from_dxf: false,
+            graphics,
+            payload,
+            text_payload,
+            object_ids,
+        });
+        converted += 1;
+    }
+    converted
 }
 
 /// lince (fix O14): the class each proxy object is written under, by name:

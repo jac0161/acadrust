@@ -54,6 +54,19 @@ impl<'a> DwgObjectWriter<'a> {
         })
     }
 
+    /// lince (fix F2b): the class body of an Arch entity read from a DWG, as
+    /// proxy data (data, strings and references in its source version).
+    pub(crate) fn architecture_entity_proxy_body(
+        data: &crate::classes::arch::ArchEntityData,
+    ) -> Option<(
+        crate::objects::ProxyPayload,
+        crate::objects::ProxyPayload,
+        Vec<crate::objects::ProxyObjectReference>,
+    )> {
+        let body = Self::architecture_record_body(data, data.dwg_source_version?).ok()?;
+        Some((body.payload, body.text, body.references))
+    }
+
     pub(crate) fn validate_architecture_record(
         data: &crate::classes::arch::ArchEntityData,
         version: crate::types::DxfVersion,
@@ -524,14 +537,21 @@ impl<'a> DwgObjectWriter<'a> {
                 if self.version.r2000_plus() {
                     self.writer.write_bit(data.from_dxf);
                 }
-                let payload = data.payload.data();
-                for bit_index in 0..data.payload.bit_count as usize {
+                // lince (fix F2b): string stream merged or split for the target version.
+                let (payload_bits, text_bits) = crate::objects::ProxyPayload::for_dwg_version(
+                    &data.payload,
+                    &data.text_payload,
+                    data.dwg_version,
+                    self.version.r2007_plus(),
+                );
+                let payload = payload_bits.data();
+                for bit_index in 0..payload_bits.bit_count as usize {
                     let byte = payload.get(bit_index / 8).copied().unwrap_or(0);
                     self.writer
                         .write_bit((byte & (0x80 >> (bit_index % 8))) != 0);
                 }
-                let text_payload = data.text_payload.data();
-                for bit_index in 0..data.text_payload.bit_count as usize {
+                let text_payload = text_bits.data();
+                for bit_index in 0..text_bits.bit_count as usize {
                     let byte = text_payload.get(bit_index / 8).copied().unwrap_or(0);
                     self.writer
                         .write_text_bit((byte & (0x80 >> (bit_index % 8))) != 0);
