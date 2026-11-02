@@ -67,3 +67,4 @@ Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) sav
 - **entities/acis/primitives.rs** (`build_cone`): se invierte el sentido de las dos coaristas de la circunferencia base (tapa `forward`, lateral `reversed`), como el CONO real de AutoCAD. Antes la tapa quedaba orientada hacia dentro: el sólido auditaba 0 pero AutoCAD no integraba su volumen (MASSPROP vacío). Ahora MASSPROP da el volumen exacto (π·r²·h/3). Beneficia a CONO y a cualquier uso de build_cone.
 
 - 2026-11-02: dwg_writer: omite entidades no admitidas por la versión destino (LIGHT <2007, MESH <2010) en vez de escribir un DWG inválido (tabla `entity_min_dwg_version`).
+- 2026-11-02: dwg_writer: MLEADERSTYLE con EED ACAD_MLEADERVER (1070=2) al guardar <AC1021; sin ella ODA no lee DWG 2000/2004.

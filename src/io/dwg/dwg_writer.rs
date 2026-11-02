@@ -70,6 +70,7 @@ impl DwgWriter {
         }
         let mut prepared = crate::io::loft_parameters::prepared(document);
         prepare_drop_version_unsupported_entities(&mut prepared);
+        prepare_mleader_style_version_eed(&mut prepared);
         prepare_surface_classes(&mut prepared);
         prepare_database_references(&mut prepared);
         prepare_table_keys(&mut prepared);
@@ -161,6 +162,7 @@ impl DwgWriter {
         validate_version(document.version)?;
         let mut prepared = crate::io::loft_parameters::prepared(document);
         prepare_drop_version_unsupported_entities(&mut prepared);
+        prepare_mleader_style_version_eed(&mut prepared);
         prepare_surface_classes(&mut prepared);
         prepare_database_references(&mut prepared);
         prepare_table_keys(&mut prepared);
@@ -226,6 +228,49 @@ fn prepare_drop_version_unsupported_entities(document: &mut std::borrow::Cow<'_,
         .collect();
     for handle in doomed {
         document.to_mut().remove_entity_arc(handle);
+    }
+}
+
+/// MLEADERSTYLE (AutoCAD 2008, AC1021) has no version field before R2010, so
+/// AutoCAD tags it with `ACAD_MLEADERVER` EED (1070 = 2) when saving to
+/// R2000/R2004. The ODA engine (progeCAD, BricsCAD...) rejects a pre-R2007
+/// file whose MLEADERSTYLE lacks it, even though AutoCAD audits it clean.
+fn prepare_mleader_style_version_eed(document: &mut std::borrow::Cow<'_, CadDocument>) {
+    const APP: &str = "ACAD_MLEADERVER";
+    if document.version >= DxfVersion::AC1021 {
+        return;
+    }
+    let app_handle = document.app_ids.get(APP).map(|app| app.handle.value());
+    let missing: Vec<Handle> = document
+        .objects
+        .iter()
+        .filter(|(_, o)| matches!(o, crate::objects::ObjectType::MultiLeaderStyle(_)))
+        .map(|(h, _)| *h)
+        .filter(|h| {
+            let in_xdata = document
+                .object_xdata
+                .get(h)
+                .is_some_and(|x| x.get_record(APP).is_some());
+            let in_raw = document
+                .eed_by_handle
+                .get(h)
+                .is_some_and(|raw| raw.iter().any(|(app, _)| Some(*app) == app_handle));
+            !in_xdata && !in_raw
+        })
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let document = document.to_mut();
+    if !document.app_ids.contains(APP) {
+        let mut app = crate::tables::AppId::new(APP);
+        app.handle = document.allocate_handle();
+        let _ = document.app_ids.add(app);
+    }
+    for handle in missing {
+        let mut record = crate::xdata::ExtendedDataRecord::new(APP);
+        record.add_value(crate::xdata::XDataValue::Integer16(2));
+        document.object_xdata.entry(handle).or_default().add_record(record);
     }
 }
 
@@ -2998,6 +3043,49 @@ mod tests {
         assert_ne!(edited.raw_records[&handle.value()].1.data, original);
         assert_eq!(edited.objects[&handle], source.objects[&handle]);
     }
+    #[test]
+    fn mleader_style_tagged_with_version_eed_before_2007() {
+        use crate::objects::ObjectType;
+        use std::borrow::Cow;
+        for (version, tagged) in [
+            (DxfVersion::AC1015, true),
+            (DxfVersion::AC1018, true),
+            (DxfVersion::AC1021, false),
+            (DxfVersion::AC1032, false),
+        ] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            let mut prepared = Cow::Borrowed(&doc);
+            prepare_mleader_style_version_eed(&mut prepared);
+            let styles: Vec<Handle> = prepared
+                .objects
+                .iter()
+                .filter(|(_, o)| matches!(o, ObjectType::MultiLeaderStyle(_)))
+                .map(|(h, _)| *h)
+                .collect();
+            assert!(!styles.is_empty(), "a new document has a Standard MLEADERSTYLE");
+            for h in &styles {
+                let record = prepared
+                    .object_xdata
+                    .get(h)
+                    .and_then(|x| x.get_record("ACAD_MLEADERVER"));
+                assert_eq!(record.is_some(), tagged, "ACAD_MLEADERVER on {version:?}");
+                if let Some(record) = record {
+                    assert_eq!(record.values, [crate::xdata::XDataValue::Integer16(2)]);
+                }
+            }
+            assert_eq!(prepared.app_ids.contains("ACAD_MLEADERVER"), tagged);
+            // Idempotent: a second pass adds nothing.
+            let before = prepared.object_xdata.clone();
+            prepare_mleader_style_version_eed(&mut prepared);
+            assert_eq!(prepared.object_xdata, before);
+            // And the written file still reads back.
+            crate::DwgReader::from_stream(std::io::Cursor::new(DwgWriter::write_to_vec(&doc).unwrap()))
+                .read()
+                .unwrap();
+        }
+    }
+
     #[test]
     fn light_dropped_when_saving_to_pre_2007_dwg() {
         use crate::entities::{EntityType, Light};
