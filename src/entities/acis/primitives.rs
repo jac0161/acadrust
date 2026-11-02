@@ -1355,13 +1355,15 @@ pub fn build_cone(center: [f64; 3], radius: f64, height: f64) -> SatDocument {
     let shell_idx = base + 8;
     let lump_idx = base + 9;
 
-    // co0: base circle on the base-cap face
+    // co0: base circle on the base-cap face. El sentido es el de `build_cylinder` y el del CONO real de AutoCAD: la
+    // tapa va `forward` (su plano mira a -Z, hacia fuera) y la cara lateral `reversed`. Al revés (como estaba) la tapa
+    // queda orientada hacia dentro: AUDIT 0, pero AutoCAD no integra el volumen (MASSPROP lo da vacío).
     sat.add_coedge(
         ptr(co(0)),
         ptr(co(0)),
         ptr(co(1)),
         ptr(e_base),
-        Sense::Reversed,
+        Sense::Forward,
         ptr(loop_base),
     );
     // co1: base circle boundary on the cone face
@@ -1370,7 +1372,7 @@ pub fn build_cone(center: [f64; 3], radius: f64, height: f64) -> SatDocument {
         ptr(co(1)),
         ptr(co(0)),
         ptr(e_base),
-        Sense::Forward,
+        Sense::Reversed,
         ptr(loop_base + 1),
     );
     // co2: singularity (apex) on the cone face — partner=$-1 (no partner for degenerate edge)
