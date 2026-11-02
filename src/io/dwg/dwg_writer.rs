@@ -69,6 +69,7 @@ impl DwgWriter {
             return Ok(());
         }
         let mut prepared = crate::io::loft_parameters::prepared(document);
+        prepare_drop_version_unsupported_entities(&mut prepared);
         prepare_surface_classes(&mut prepared);
         prepare_database_references(&mut prepared);
         prepare_table_keys(&mut prepared);
@@ -159,6 +160,7 @@ impl DwgWriter {
         validate_unknown_records(document)?;
         validate_version(document.version)?;
         let mut prepared = crate::io::loft_parameters::prepared(document);
+        prepare_drop_version_unsupported_entities(&mut prepared);
         prepare_surface_classes(&mut prepared);
         prepare_database_references(&mut prepared);
         prepare_table_keys(&mut prepared);
@@ -190,6 +192,40 @@ pub(crate) fn prepare_active_viewport_elevation(document: &mut std::borrow::Cow<
                 viewport.ucs_elevation = elevation;
             }
         }
+    }
+}
+
+/// The first DWG version an entity type is valid in, or `None` when it is
+/// valid in every version this writer supports (R2000+).
+///
+/// An entity introduced after the target version has no class the older
+/// format knows, so writing it produces a file the reader rejects
+/// (AutoCAD opens `render2000.dwg` with ErrorStatus 53 over a LIGHT).
+/// shortcut: only LIGHT (R2007) and MESH/SubDMesh (R2010) are tabled, the
+/// two render-era entities lince emits; add others here (SECTIONOBJECT
+/// R2007, VIEWBORDER, the R2007+ UNDERLAYs) as their minimum versions are
+/// confirmed against the ODA spec.
+fn entity_min_dwg_version(entity: &crate::entities::EntityType) -> Option<DxfVersion> {
+    use crate::entities::EntityType;
+    match entity {
+        EntityType::Light(_) => Some(DxfVersion::AC1021),
+        EntityType::Mesh(_) => Some(DxfVersion::AC1024),
+        _ => None,
+    }
+}
+
+/// Drop entities the target version cannot represent, rather than writing an
+/// invalid file. Omits (never degrades: inventing geometry would be worse).
+/// Clones the document only when something is actually dropped.
+fn prepare_drop_version_unsupported_entities(document: &mut std::borrow::Cow<'_, CadDocument>) {
+    let version = document.version;
+    let doomed: Vec<Handle> = document
+        .entities()
+        .filter(|e| entity_min_dwg_version(e).is_some_and(|min| version < min))
+        .map(|e| e.common().handle)
+        .collect();
+    for handle in doomed {
+        document.to_mut().remove_entity_arc(handle);
     }
 }
 
@@ -2962,6 +2998,38 @@ mod tests {
         assert_ne!(edited.raw_records[&handle.value()].1.data, original);
         assert_eq!(edited.objects[&handle], source.objects[&handle]);
     }
+    #[test]
+    fn light_dropped_when_saving_to_pre_2007_dwg() {
+        use crate::entities::{EntityType, Light};
+        use crate::DwgReader;
+        use std::io::Cursor;
+        let count_lights = |doc: &CadDocument| {
+            doc.entities()
+                .filter(|e| matches!(e, EntityType::Light(_)))
+                .count()
+        };
+        // LIGHT (AcDbLight) is an AutoCAD 2007 entity: invalid before AC1021.
+        for (version, expected) in [
+            (DxfVersion::AC1015, 0),
+            (DxfVersion::AC1018, 0),
+            (DxfVersion::AC1021, 1),
+            (DxfVersion::AC1032, 1),
+        ] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            doc.add_entity(EntityType::Light(Box::new(Light::new())))
+                .unwrap();
+            let bytes = DwgWriter::write_to_vec(&doc).unwrap();
+            // A file AutoCAD rejected (ErrorStatus 53) would not round-trip here.
+            let reread = DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+            assert_eq!(
+                count_lights(&reread),
+                expected,
+                "LIGHT count after save to {version:?}"
+            );
+        }
+    }
+
     #[test]
     fn acds_record_table_indexes_each_length_prefixed_blob() {
         for count in [1, 2, 7, 8, 16] {
