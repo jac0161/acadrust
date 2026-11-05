@@ -1739,7 +1739,8 @@ impl<'a> DwgObjectWriter<'a> {
         // DwgObjectWriter.writeDimensionStyle() exactly.
         if self.version.r2000_plus() {
             // DIMPOST TV 3
-            self.writer.write_variable_text(&ds.dimpost);
+            // lince (ISO-25): "<>" is the default prefix/suffix, which AutoCAD stores empty (as the DXF writer does).
+            self.writer.write_variable_text(if ds.dimpost == "<>" { "" } else { &ds.dimpost });
             // DIMAPOST TV 4
             self.writer.write_variable_text(&ds.dimapost);
             // DIMSCALE BD 40

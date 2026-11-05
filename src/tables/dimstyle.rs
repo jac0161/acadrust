@@ -290,9 +290,10 @@ impl DimStyle {
             dimtfillclr_true_color: None,
             dimtmove: 0,
             dimtxtdirection: false,
-            dimaltmzf: 0.0,
+            // lince (ISO-25): AutoCAD's default sub-unit factors (DIMALTMZF, DIMMZF) are 100, not 0.
+            dimaltmzf: 100.0,
             dimaltmzs: String::new(),
-            dimmzf: 0.0,
+            dimmzf: 100.0,
             dimmzs: String::new(),
             dimtxsty_handle: Handle::NULL,
             dimtxsty: "Standard".to_string(),

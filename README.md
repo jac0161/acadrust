@@ -1,5 +1,15 @@
 # acadrust
 
+> **About this fork.** This fork contains the changes to acadrust used by
+> [LinceCAD](https://www.lincecad.com/), a commercial 2D and 3D CAD application
+> for Windows and Linux. The [`cadfv`](https://github.com/jac0161/acadrust/tree/cadfv)
+> branch is acadrust v0.6.8 plus those changes, which are listed in
+> [CADFV_CHANGES.md](https://github.com/jac0161/acadrust/blob/cadfv/CADFV_CHANGES.md)
+> and marked in the code with `lince (fix …)` comments. The modified files remain
+> under the Mozilla Public License 2.0, and their source is published here as the
+> license requires. The original project is
+> [hakanaktt/acadrust](https://github.com/hakanaktt/acadrust).
+
 [![CI](https://github.com/hakanaktt/acadrust/actions/workflows/ci.yml/badge.svg)](https://github.com/hakanaktt/acadrust/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/acadrust.svg)](https://crates.io/crates/acadrust)
 [![Documentation](https://docs.rs/acadrust/badge.svg)](https://docs.rs/acadrust)

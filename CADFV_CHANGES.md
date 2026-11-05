@@ -1,8 +1,6 @@
-# Changes made for cadfv
+# Changes made for LinceCAD
 
-This branch (`cadfv`) is acadrust **v0.6.8** (tag `v0.6.8`, commit afffe46) with fixes found while validating real-world drawings against AutoCAD 2027 for the cadfv CAD application. Every change is marked in the code with a `cadfv (fix …)` comment. The files remain under the **Mozilla Public License 2.0**, like the rest of acadrust.
-
-Method: each file written by acadrust was opened and audited in AutoCAD 2027 (`accoreconsole` AUDIT + entity count) and compared with AutoCAD's own DXFOUT/SAVEAS of the same original.
+This branch (`cadfv`) is acadrust **v0.6.8** (tag `v0.6.8`, commit afffe46) with the fixes and additions used by the LinceCAD CAD application (https://www.lincecad.com/). Every change is marked in the code with a `lince (fix …)` comment (older entries say `cadfv (fix …)`). The files remain under the **Mozilla Public License 2.0**, like the rest of acadrust.
 
 | Id | File | Problem | Fix |
 |---|---|---|---|
@@ -27,7 +25,7 @@ Method: each file written by acadrust was opened and audited in AutoCAD 2027 (`a
 
 Results on a 40-file real-world corpus × 8 output formats: rejected DXF 15 → 2, DWG saved in another version that would not open 8 → 2, copies with more AUDIT errors than the original 18 → 5, no copy loses entities.
 
-Update (cadfv 0.0.8-alpha, 2026-10-31): with F2c, D3b, D7b and the R2000 fixes, all copies of the corpus open in AutoCAD 2027; file 08 no longer loses its nested xref.
+Update (cadfv 0.0.8-alpha, 2026-10-31): with F2c, D3b, D7b and the R2000 fixes, all copies of the test corpus open correctly; file 08 no longer loses its nested xref.
 
 Update (cadfv 0.0.10-alpha, 2026-10-31): B-r5 and display fixes for multileaders and tables.
 
@@ -40,7 +38,7 @@ Update (Lince2D 0.1.4-beta, 2026-11-01): the program was renamed from cadfv to *
 - UCS: `UCSNAME` handle in DWG and `$UCSNAME` in DXF. Gradients not written to R2000 DXF.
 - MLINE explode with mitres and visible segments.
 - Other files differ only by small fixes made while integrating (lint, typos, visibility).
-All changes are validated with AutoCAD 2027 (AUDIT, 0 errors) and the 1637 library tests.
+All changes pass the 1637 library tests.
 
 Update (Lince2D 0.1.5-beta, 2026-11-01): proxies when saving to another version (`lince (fix F2b)`): the proxy string stream is merged into the data for 2000/2004 and split again from 2007, as AutoCAD does; entity proxies keep their class when classes are renumbered; `custom_records_as_proxies` writes AutoCAD Architecture (AEC) objects and undecoded objects (BINRECORD) as proxies of their class with their graphics; SCALE proxies become native scales. DXF R12 output (`lince (fix F-06)`): dimension style arrow block names (DIMBLK, DIMBLK1, DIMBLK2), TrueType text styles written as `txt`, AEC objects omitted. Validated with AutoCAD 2027 (DXF R12 of 12 corpus files open with 0 AUDIT errors; full corpus regression: 288 copies, 0 worse) and the 1637 library tests.
 
@@ -49,12 +47,12 @@ Update (Lince2D 0.5.0-beta, 2026-11-01): brings `src/` up to date with every cha
 - **ACIS surfaces**: `read_surface` (`lince (fix NURBSURFACE R2013+)`) reads the second modeler body that follows when `acis_empty_bit` is clear, so a 2013+ DWG with a NURBS surface opens in full (previously "Invalid DWG array count" at handle 30F). Used by Lince2D's ACIS tessellation (view 3DSOLID/BODY/REGION/SURFACE).
 - **Table styles**: `objects/mod.rs` exposes `table_styles_need_cell_maps(doc)` (same condition as `store_table_style_cell_maps`) so a DXF save only clones the document when a table style actually lacks its CELLSTYLEMAP; byte-identical output, large drawings save faster.
 - `dwg_reader.rs`, `dwg_writer.rs`, `object_writer/mod.rs`, `tables/mod.rs`: small fixes carried over while integrating (markers `lince (fix …)`).
-Validated with AutoCAD 2027 (AUDIT, 0 errors; full corpus regression 0 worse) and the acadrust library tests (1639).
+Checked with a full corpus regression (0 worse) and the acadrust library tests (1639).
 
 Update (Lince2D 0.6.0-beta, 2026-11-01): ACIS solids in DWG R13–R2000. Two root causes of AutoCAD's ErrorStatus=53 when saving solids to the 2000 format:
 - **SAT chunking** (`io/dwg/dwg_stream_writers/object_writer/entities.rs`, `lince (fix R2000-ACIS-bloques)`): the inline SAT string is written in blocks of at most 4096 bytes (BL length + bytes, terminated by BL 0), exactly as AutoCAD does; a single oversized block made the R13–R2000 reader reject the file.
 - **Legacy SAT v400 down-convert** (`entities/acis/types.rs`, `SatDocument::to_legacy_v400`): when lowering a SAB (ASM 22300) solid to the legacy inline SAT that R13–R2000 expects, drop the `asmheader` record (renumbering pointers), set the header version to 4.0 and remove the auxiliary ASM integer from `coedge`/`vertex` (absent in ACIS 4.0, otherwise modeler error 65000). Applied only for R13–R2000.
-Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) save to DWG 2000 with 0 AUDIT errors in AutoCAD 2027, area/volume exact, and the generated SAT is byte-identical to AutoCAD's own SAVEAS-2000. Limits (need an ACIS kernel, out of scope): procedural surfaces (blend/loft/sweep) and R2004–R2010 (SAB ASM-223 downsave) still cannot be re-saved to those older formats. Validated with AutoCAD 2027 and the library tests (1641).
+Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) save to DWG 2000 with 0 audit errors, exact area/volume, and the generated SAT matches the reference SAVEAS-2000 output byte for byte. Limits (need an ACIS kernel, out of scope): procedural surfaces (blend/loft/sweep) and R2004–R2010 (SAB ASM-223 downsave) still cannot be re-saved to those older formats. Validated with AutoCAD 2027 and the library tests (1641).
 
 ## 2026-11-01 (noche) — memoria ObjectType y soporte de modelado 3D
 
