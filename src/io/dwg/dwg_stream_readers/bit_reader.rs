@@ -1339,11 +1339,11 @@ mod tests {
         let mut w = make_writer(DxfVersion::AC1015);
         w.write_bit_double(0.0);
         w.write_bit_double(1.0);
-        w.write_bit_double(3.14159);
+        w.write_bit_double(std::f64::consts::PI);
         let mut r = make_reader(w);
         assert_eq!(r.read_bit_double(), 0.0);
         assert_eq!(r.read_bit_double(), 1.0);
-        assert!((r.read_bit_double() - 3.14159).abs() < 1e-10);
+        assert!((r.read_bit_double() - std::f64::consts::PI).abs() < 1e-10);
     }
 
     #[test]
@@ -1464,16 +1464,16 @@ mod tests {
     #[test]
     fn test_bit_double_with_default_roundtrip() {
         let mut w = make_writer(DxfVersion::AC1015);
-        let reference = 3.14;
+        let reference = std::f64::consts::PI;
         // Case 00: stored == reference → 2 bits
-        // Writer stores 3.14 against the reference default.
-        w.write_bit_double_with_default(3.14, reference);
-        // Case 11: stored=100.5 is very different from reference=3.14 → full RD
+        // Writer stores std::f64::consts::PI against the reference default.
+        w.write_bit_double_with_default(std::f64::consts::PI, reference);
+        // Case 11: stored=100.5 is very different from reference=std::f64::consts::PI → full RD
         w.write_bit_double_with_default(100.5, reference);
         let mut r = make_reader(w);
-        // Reader: read_bit_double_with_default(reference=3.14)
+        // Reader: read_bit_double_with_default(reference=std::f64::consts::PI)
         let v1 = r.read_bit_double_with_default(reference);
-        assert!((v1 - 3.14).abs() < 1e-10, "v1 = {}", v1);
+        assert!((v1 - std::f64::consts::PI).abs() < 1e-10, "v1 = {}", v1);
         let v2 = r.read_bit_double_with_default(reference);
         assert!((v2 - 100.5).abs() < 1e-10, "v2 = {}", v2);
     }

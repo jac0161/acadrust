@@ -881,7 +881,7 @@ mod tests {
     fn test_xrecord_add_entries() {
         let mut xrecord = XRecord::new();
         xrecord.add_string(1, "Test");
-        xrecord.add_double(40, 3.14);
+        xrecord.add_double(40, std::f64::consts::PI);
         xrecord.add_int32(90, 42);
         xrecord.add_bool(290, true);
 

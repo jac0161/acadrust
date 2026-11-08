@@ -251,7 +251,7 @@ mod tests {
         assert!(xdata.is_empty());
 
         let mut record = ExtendedDataRecord::new("APP1");
-        record.add_value(XDataValue::Real(3.14));
+        record.add_value(XDataValue::Real(std::f64::consts::PI));
         xdata.add_record(record);
 
         assert_eq!(xdata.len(), 1);

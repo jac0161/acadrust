@@ -319,7 +319,7 @@ mod tests {
             XDataValue::ControlString("{".to_string()),
             XDataValue::Integer16(-42),
             XDataValue::Integer32(1_000_000),
-            XDataValue::Real(3.141592653589793),
+            XDataValue::Real(std::f64::consts::PI),
             XDataValue::Distance(2.5),
             XDataValue::ScaleFactor(0.5),
             XDataValue::Point3D(Vector3::new(1.0, 2.0, 3.0)),

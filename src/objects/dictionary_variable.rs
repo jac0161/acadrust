@@ -213,6 +213,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_as_f64() {
         let var = DictionaryVariable::with_value("3.14159");
         let result = var.as_f64();

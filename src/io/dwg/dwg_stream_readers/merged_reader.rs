@@ -677,7 +677,7 @@ mod tests {
         let version = DxfVersion::AC1015;
         let mut main_writer = DwgBitWriter::new(dwg, version);
         main_writer.write_bit_short(42);
-        main_writer.write_bit_double(3.14);
+        main_writer.write_bit_double(std::f64::consts::PI);
         main_writer.write_variable_text("hello");
 
         // Create handle stream
@@ -693,7 +693,7 @@ mod tests {
         let mut reader = DwgMergedReader::from_readers(main, None, Some(handle), version);
 
         assert_eq!(reader.read_bit_short(), 42);
-        assert!((reader.read_bit_double() - 3.14).abs() < 1e-10);
+        assert!((reader.read_bit_double() - std::f64::consts::PI).abs() < 1e-10);
         assert_eq!(reader.read_variable_text(), "hello");
 
         let h = reader.read_handle();

@@ -1136,7 +1136,7 @@ mod tests {
     #[test]
     fn test_bit_double_other() {
         let mut w = writer();
-        w.write_bit_double(3.14);
+        w.write_bit_double(std::f64::consts::PI);
         // 2-bit code = 00, then 8 bytes
         let bytes = w.into_bytes();
         assert_eq!(bytes[0] & 0xC0, 0x00);
@@ -1295,7 +1295,7 @@ mod tests {
     #[test]
     fn test_bit_double_with_default_same() {
         let mut w = writer();
-        w.write_bit_double_with_default(3.14, 3.14);
+        w.write_bit_double_with_default(std::f64::consts::PI, std::f64::consts::PI);
         let bytes = w.into_bytes();
         assert_eq!(bytes[0] & 0xC0, 0x00); // code = 00 (use default)
     }

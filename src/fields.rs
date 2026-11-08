@@ -3797,7 +3797,7 @@ mod tests {
             "2001/12/13"
         );
         assert_eq!(num_str(5.0), "5");
-        assert_eq!(rtos(3.14159, Some(2)), "3.14");
+        assert_eq!(rtos(std::f64::consts::PI, Some(2)), "3.14");
     }
 }
 

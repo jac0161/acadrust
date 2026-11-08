@@ -66,3 +66,8 @@ Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) sav
 
 - 2026-11-02: dwg_writer: omite entidades no admitidas por la versión destino (LIGHT <2007, MESH <2010) en vez de escribir un DWG inválido (tabla `entity_min_dwg_version`).
 - 2026-11-02: dwg_writer: MLEADERSTYLE con EED ACAD_MLEADERVER (1070=2) al guardar <AC1021; sin ella ODA no lee DWG 2000/2004.
+
+## 2026-11-08 — sync with LinceCAD 0.9.8-rc7
+
+- **object_writer/mod.rs**: the DIMJOGANG upper clamp is exactly `FRAC_PI_2` (was 1.5708), matching the DXF writer.
+- Tests (fields, bit_reader/bit_writer, merged_reader, eed_codec, xrecord, xdata): `3.14…` literals replaced by `std::f64::consts::PI` to pass Clippy correctness; `#[allow]` in `dictionary_variable.rs`. No format changes.
