@@ -1259,13 +1259,23 @@ fn proxy_class_names(document: &CadDocument) -> Vec<(Handle, String)> {
         .collect()
 }
 
-/// Class names of objects whose class the table lacks.
+/// Class names of objects and entities whose class the table lacks.
+///
+/// lince: entities count too. An IMAGE (or WIPEOUT, MULTILEADER...) added to
+/// a drawing whose source file had none is written with a fixed type code
+/// the reader cannot resolve, and AutoCAD refuses the whole drawing
+/// (ErrorStatus 53).
 fn missing_object_class_names(document: &CadDocument) -> Vec<Vec<std::borrow::Cow<'_, str>>> {
     objects_in_handle_order(document)
         .into_iter()
         .map(|(_, object)| {
             crate::io::dwg::dwg_stream_writers::object_writer::objects::object_class_names(object)
         })
+        .chain(
+            document
+                .entities()
+                .map(|entity| vec![std::borrow::Cow::Borrowed(entity.as_entity().entity_type())]),
+        )
         .filter(|names| !names.iter().any(|name| document.classes.contains(name)))
         .collect()
 }
@@ -3286,6 +3296,39 @@ mod tests {
             ObjectType::ClassObject(o)
                 if matches!(&o.data, ClassObjectData::LayerFilter(f) if f.names == ["WALLS"])
         )));
+    }
+
+    #[test]
+    fn entity_without_its_class_gets_it_declared() {
+        use crate::entities::{EntityType, RasterImage};
+        use crate::types::Vector3;
+
+        // A drawing from a file without images (so without the IMAGE class)
+        // that gains one: the class must be declared on save.
+        let mut document = CadDocument::new();
+        let mut classes = crate::classes::DxfClassCollection::new();
+        for class in document.classes.iter() {
+            if !class.dxf_name.eq_ignore_ascii_case("IMAGE") {
+                classes.push_preserving(class.clone());
+            }
+        }
+        document.classes = classes;
+        document.dwg_source_version = Some(document.version);
+        let image = RasterImage::new("a.png", Vector3::ZERO, 10.0, 10.0);
+        document.add_entity(EntityType::RasterImage(image)).unwrap();
+
+        let bytes = DwgWriter::write_to_vec(&document).unwrap();
+        let decoded = crate::io::dwg::DwgReader::from_stream(Cursor::new(bytes))
+            .read()
+            .unwrap();
+        assert!(decoded.classes.contains("IMAGE"));
+        assert_eq!(
+            decoded
+                .entities()
+                .filter(|e| matches!(e, EntityType::RasterImage(_)))
+                .count(),
+            1
+        );
     }
 
     #[test]

@@ -80,3 +80,7 @@ Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) sav
 - **Fields** (`fields.rs`): `CustomDP.<name>` accepted as a drawing custom property.
 - **Table styles** (writer): per-cell border overrides are not written before R2007 (AutoCAD could not open the file); edge borders are kept in the R2010+ named cell styles.
 - Checked with the library tests and LinceCAD's end-to-end tests against AutoCAD 2027 (AUDIT 0, entget dumps identical) in DWG 2000, 2007 and 2018.
+
+## 2026-11-09 — entity classes on DWG save
+
+- **dwg_writer.rs**: the classes that the table lacks are now declared for entities too, not only for objects. An IMAGE (or WIPEOUT, MULTILEADER, MESH…) added to a drawing whose source file had none was written with a fixed type code, and AutoCAD 2027 refused the whole drawing (ErrorStatus 53). New test `entity_without_its_class_gets_it_declared`; checked with AutoCAD 2027 (AUDIT 0).
