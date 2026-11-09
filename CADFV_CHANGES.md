@@ -71,3 +71,12 @@ Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) sav
 
 - **object_writer/mod.rs**: the DIMJOGANG upper clamp is exactly `FRAC_PI_2` (was 1.5708), matching the DXF writer.
 - Tests (fields, bit_reader/bit_writer, merged_reader, eed_codec, xrecord, xdata): `3.14…` literals replaced by `std::f64::consts::PI` to pass Clippy correctness; `#[allow]` in `dictionary_variable.rs`. No format changes.
+
+## 2026-11-09 — sync with LinceCAD 0.9.8-rc8
+
+- **Annotative attributes in DWG 2000–2007** (`io/dwg/annotative_attributes.rs`, new): AutoCAD 2027 saves an INSERT with annotative attributes "decomposed" into an anonymous `*U` block (XDATA `AcadAnnotativeAttributeDecomposition`); on read the INSERT, its position and its ATTRIBs are recomposed, the `AcadAnnotative` flag is restored and the scale context is created from the ATTDEF. Before, those INSERTs were read with no attributes (data loss).
+- **Embedded MTEXT context before R2004** (`dwg_document_builder.rs`, `object_writer/objects.rs`): `ACDB_MTEXTATTRIBUTEOBJECTCONTEXTDATA` has no "no xdictionary" bit before R2004 (the handle is always present, 0 means none). The extra bit misaligned the object ("Invalid record … type_code=517") and made AutoCAD reject the file on save.
+- **EED of INSERT attributes** (`dwg_document_builder.rs`): the raw EED of the ATTRIBs owned by an INSERT is decoded like that of top-level entities.
+- **Fields** (`fields.rs`): `CustomDP.<name>` accepted as a drawing custom property.
+- **Table styles** (writer): per-cell border overrides are not written before R2007 (AutoCAD could not open the file); edge borders are kept in the R2010+ named cell styles.
+- Checked with the library tests and LinceCAD's end-to-end tests against AutoCAD 2027 (AUDIT 0, entget dumps identical) in DWG 2000, 2007 and 2018.

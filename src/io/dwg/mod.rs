@@ -58,6 +58,7 @@ mod unwind_tests {
     }
 }
 
+pub(crate) mod annotative_attributes;
 pub mod annotative_eed;
 pub mod checksum;
 pub mod compression;

@@ -1266,7 +1266,7 @@ impl<'a> DwgObjectWriter<'a> {
             // The R2010+ flags field carries the table style flags.
             self.writer
                 .write_bit_long((value.effective_flags().bits() & !STALE_TABLE_STYLE_FLAG) as i32);
-            self.writer.write_bit_long(value.modern_unknown_long2);
+            self.writer.write_bit_long(value.flow_direction as i32);
             self.writer.write_handle(
                 DwgReferenceType::HardOwnership,
                 value.modern_cell_style_handle.value(),
@@ -2502,7 +2502,11 @@ impl<'a> DwgObjectWriter<'a> {
                     // Embedded non-entity common tail. Type, handle and EED
                     // are omitted because this object lives inline.
                     self.writer.write_bit_long(context.reactors.len() as i32);
-                    self.writer.write_bit(context.xdictionary_handle.is_none());
+                    // Before R2004 there is no "no xdictionary" bit (the
+                    // handle is always written, 0 = none), as AutoCAD does.
+                    if self.version.r2004_plus() {
+                        self.writer.write_bit(context.xdictionary_handle.is_none());
+                    }
                     if self.version.r2013_plus(self.dxf_version) {
                         self.writer.write_bit(context.has_binary_data);
                     }
@@ -2595,6 +2599,8 @@ impl<'a> DwgObjectWriter<'a> {
                             DwgReferenceType::HardOwnership,
                             xdictionary_handle.value(),
                         );
+                    } else if !self.version.r2004_plus() {
+                        self.writer.write_handle(DwgReferenceType::HardOwnership, 0);
                     }
                     self.writer
                         .write_handle(DwgReferenceType::HardPointer, context.scale.value());

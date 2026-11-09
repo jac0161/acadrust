@@ -1293,7 +1293,8 @@ fn eval_acvar(
         _ => si
             .custom_properties
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            // AutoCAD escribe la propiedad personalizada como `CustomDP.Nombre`.
+            .find(|(k, _)| k.eq_ignore_ascii_case(name.strip_prefix("CustomDP.").unwrap_or(name)))
             .and_then(|(_, v)| nonempty(v))
             .or_else(|| {
                 let v = getvar(doc, name, ctx)?;
@@ -2484,6 +2485,8 @@ impl CadDocument {
                 Some(ObjectType::TableStyle(s)) => Some(s.clone()),
                 _ => None,
             });
+        let direccion = if style.as_ref().is_some_and(|s| s.flow_direction == crate::objects::TableFlowDirection::Up) { -1.0 } else { 1.0 };
+        let sy = |v: f64| direccion * -v;
         let margin = style.as_ref().map_or(0.06, |s| s.horizontal_margin);
         let legacy = t.legacy_style_override.clone().unwrap_or_default();
         let title = !legacy.title_suppressed.unwrap_or(false);
@@ -2617,7 +2620,7 @@ impl CadDocument {
                 };
                 if let Some(color) = fill {
                     let (w, h) = span[r][c];
-                    let (x0, x1, y0, y1) = (xs[c], xs[c + w], -ys[r], -ys[r + h]);
+                    let (x0, x1, y0, y1) = (xs[c], xs[c + w], sy(ys[r]), sy(ys[r + h]));
                     let mut solid = Solid::new(
                         Vector3::new(x0, y0, 0.0),
                         Vector3::new(x0, y1, 0.0),
@@ -2691,12 +2694,44 @@ impl CadDocument {
                 texts.push(((r, c), m));
             }
         }
-        let line = |a: Vector3, b: Vector3| {
+        let line = |a: Vector3, b: Vector3, borde: Option<crate::objects::TableCellBorder>| {
+            if borde.as_ref().is_some_and(|b| b.is_invisible) {
+                return None;
+            }
             let mut l = Line::from_points(a, b);
             by_block(&mut l.common);
             l.common.linetype = "ByBlock".into();
-            l.common.line_weight = LineWeight::ByBlock;
-            l
+            if let Some(b) = borde {
+                (l.common.color, l.common.line_weight) = (b.color, b.line_weight);
+            }
+            Some(l)
+        };
+        let borde_propio = |r: usize, c: usize, horizontal: bool| {
+            use crate::entities::table::{BorderType, CellEdgeFlags as E};
+            let s = t.rows.get(r)?.cells.get(c)?.style.as_ref()?;
+            let borde = if horizontal {
+                if r == 0 && s.applied_border_edges.contains(E::TOP) {
+                    Some(s.top_border.clone())
+                } else if r > 0 && s.applied_border_edges.contains(E::BOTTOM) {
+                    Some(s.bottom_border.clone())
+                } else {
+                    None
+                }
+            } else if c == 0 && s.applied_border_edges.contains(E::LEFT) {
+                Some(s.left_border.clone())
+            } else if c > 0 && s.applied_border_edges.contains(E::RIGHT) {
+                Some(s.right_border.clone())
+            } else {
+                None
+            };
+            borde.map(|b| crate::objects::TableCellBorder {
+                property_flags: Default::default(),
+                border_type: if b.border_type == BorderType::Double { crate::objects::TableBorderType::Double } else { crate::objects::TableBorderType::Single },
+                line_weight: b.line_weight,
+                color: b.color,
+                is_invisible: b.invisible,
+                double_line_spacing: 0.0,
+            })
         };
         // Grid lines, skipping the inside of merged regions: each row
         // boundary top to bottom as runs left to right, then each column
@@ -2704,6 +2739,7 @@ impl CadDocument {
         let mut lines = Vec::new();
         for k in 0..=nr {
             let open = |c: usize| k == 0 || k == nr || owner[k - 1][c] != owner[k][c];
+            let borde = row_format(k.min(nr - 1)).map(|f| if k == 0 { f.top_border } else if k == nr { f.bottom_border } else { f.horizontal_inside_border });
             let mut c = 0;
             while c < nc {
                 if !open(c) {
@@ -2714,14 +2750,16 @@ impl CadDocument {
                 while c < nc && open(c) {
                     c += 1;
                 }
-                lines.push(line(
-                    Vector3::new(xs[start], -ys[k], 0.0),
-                    Vector3::new(xs[c], -ys[k], 0.0),
+                lines.extend(line(
+                    Vector3::new(xs[start], sy(ys[k]), 0.0),
+                    Vector3::new(xs[c], sy(ys[k]), 0.0),
+                    borde_propio(k.min(nr - 1), start, true).or(borde.clone()),
                 ));
             }
         }
         for k in 0..=nc {
             let open = |r: usize| k == 0 || k == nc || owner[r][k - 1] != owner[r][k];
+            let borde = row_format(0).map(|f| if k == 0 { f.left_border } else if k == nc { f.right_border } else { f.vertical_inside_border });
             let mut r = 0;
             while r < nr {
                 if !open(r) {
@@ -2732,9 +2770,10 @@ impl CadDocument {
                 while r < nr && open(r) {
                     r += 1;
                 }
-                lines.push(line(
-                    Vector3::new(xs[k], -ys[start], 0.0),
-                    Vector3::new(xs[k], -ys[r], 0.0),
+                lines.extend(line(
+                    Vector3::new(xs[k], sy(ys[start]), 0.0),
+                    Vector3::new(xs[k], sy(ys[r]), 0.0),
+                    borde_propio(start, k, false).or(borde.clone()),
                 ));
             }
         }

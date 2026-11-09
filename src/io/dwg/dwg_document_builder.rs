@@ -3163,34 +3163,46 @@ impl DwgDocumentBuilder {
                 .map(|l| (l.handle.value(), l.name.clone()))
                 .collect();
             if !app_name_by_handle.is_empty() {
-                for_each_mut(&mut document.entities, |entity| {
-                    let records: Vec<crate::xdata::ExtendedDataRecord> = {
-                        let xd = &entity.common().extended_data;
-                        xd.raw_dwg_eed
-                            .iter()
-                            .filter_map(|(app_handle, bytes)| {
-                                let Some(name) = app_name_by_handle.get(app_handle) else {
-                                    return None;
-                                };
-                                if xd.get_record(name).is_some() {
-                                    return None;
-                                }
-                                crate::io::dwg::eed_codec::decode_values(bytes, wide, |h| {
-                                    layer_name_by_handle.get(&h).cloned()
-                                })
-                                .map(|values| {
-                                    let mut rec =
-                                        crate::xdata::ExtendedDataRecord::new(name.clone());
-                                    rec.values = values;
-                                    rec
-                                })
+                // Decodes the raw EED of one entity into records (the attributes
+                // of an INSERT are not in the entity list: they need it too).
+                let decode_eed = |xd: &crate::xdata::ExtendedData| -> Vec<crate::xdata::ExtendedDataRecord> {
+                    xd.raw_dwg_eed
+                        .iter()
+                        .filter_map(|(app_handle, bytes)| {
+                            let Some(name) = app_name_by_handle.get(app_handle) else {
+                                return None;
+                            };
+                            if xd.get_record(name).is_some() {
+                                return None;
+                            }
+                            crate::io::dwg::eed_codec::decode_values(bytes, wide, |h| {
+                                layer_name_by_handle.get(&h).cloned()
                             })
-                            .collect()
-                    };
+                            .map(|values| {
+                                let mut rec = crate::xdata::ExtendedDataRecord::new(name.clone());
+                                rec.values = values;
+                                rec
+                            })
+                        })
+                        .collect()
+                };
+                for_each_mut(&mut document.entities, |entity| {
+                    let records = decode_eed(&entity.common().extended_data);
                     if !records.is_empty() {
                         let xd = &mut std::sync::Arc::make_mut(entity).common_mut().extended_data;
                         for record in records {
                             xd.add_record(record);
+                        }
+                    }
+                    if let EntityType::Insert(ins) = entity.as_ref() {
+                        if ins.attributes.iter().any(|a| !a.common.extended_data.raw_dwg_eed.is_empty()) {
+                            if let EntityType::Insert(ins) = std::sync::Arc::make_mut(entity) {
+                                for att in &mut ins.attributes {
+                                    for record in decode_eed(&att.common.extended_data) {
+                                        att.common.extended_data.add_record(record);
+                                    }
+                                }
+                            }
                         }
                     }
                     if self.obj_reader.version().r13_14_only() {
@@ -3241,6 +3253,8 @@ impl DwgDocumentBuilder {
                 document.object_xdata = object_xdata;
             }
         }
+        // DWG 2000-2007: INSERTs with annotative ATTRIBs come decomposed.
+        crate::io::dwg::annotative_attributes::recompose(document);
         if perf {
             eprintln!(
                 "[perf] dwg-build eed={:.1}ms",
@@ -7402,7 +7416,15 @@ impl DwgDocumentBuilder {
                                     let embedded_reactor_count =
                                         reader.read_count()
                                             as usize;
-                                    let embedded_no_xdic = reader.read_bit();
+                                    // Before R2004 the common data has no "no
+                                    // xdictionary" bit: the handle is always
+                                    // there (0 = none). AutoCAD writes it so in
+                                    // DWG 2000.
+                                    let embedded_no_xdic = self
+                                        .obj_reader
+                                        .version()
+                                        .r2004_plus()
+                                        && reader.read_bit();
                                     let embedded_has_binary_data = if self
                                         .obj_reader
                                         .version()
@@ -7514,6 +7536,7 @@ impl DwgDocumentBuilder {
                                             Some(Handle::from(
                                                 reader.read_handle(),
                                             ))
+                                            .filter(|h| !h.is_null())
                                         };
                                     let context_scale =
                                         reader.read_handle();

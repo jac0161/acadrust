@@ -3672,7 +3672,9 @@ impl<'a> DwgObjectWriter<'a> {
         }
         self.writer.write_bit(cell.style.is_some());
         if let Some(style) = &cell.style {
-            let flags = style.override_flags;
+            // lince (fix): AutoCAD no abre el DWG anterior a R2007 con bordes de celda propios (ErrorStatus 53,
+            // comprobado con accoreconsole en AC1015/AC1018); en esos formatos los bordes viven en el bloque *T.
+            let flags = if self.version.r2007_plus() { style.override_flags } else { style.override_flags & !0x3FC0 };
             self.writer.write_bit_long(flags);
             self.writer.write_byte(cell.virtual_edge as u8);
             if flags & 0x01 != 0 {

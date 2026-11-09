@@ -464,6 +464,7 @@ pub fn read_table_style(reader: &mut DwgMergedReader, version: DwgVersion) -> Ta
         crate::objects::TableStyleFlags::from_bits_retain(value.modern_unknown_long1 as i16);
     value.sync_suppression_flags();
     value.modern_unknown_long2 = reader.read_bit_long();
+    value.flow_direction = crate::objects::TableFlowDirection::from(value.modern_unknown_long2 as i16);
     value.modern_cell_style_handle = Handle::from(reader.read_handle());
     let modern_style = read_named_table_cell_style(reader);
     value.horizontal_margin = modern_style.cell_style.horizontal_margin;
