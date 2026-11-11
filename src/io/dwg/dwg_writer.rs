@@ -1320,10 +1320,17 @@ fn add_missing_object_classes(document: &mut CadDocument) {
 
 /// Bring a document into shape for a version older than the one it came from.
 ///
-/// R14 and older expect a VxTable record per viewport. Style dictionaries are
+/// R2000 and older expect a VxTable record per viewport. Style dictionaries are
 /// removed before the version that introduced their objects.
 fn prepare_legacy_document(document: &mut CadDocument) {
-    if document.version <= DxfVersion::AC1014 {
+    // lince (fix DWG2000-VP): R2000 too, as AutoCAD's SAVEAS 2000 does.
+    if document.version <= DxfVersion::AC1015 {
+        // A document read from R2004+ has no VX table control.
+        if document.vx_table.handle().is_null() {
+            let control = document.allocate_handle();
+            document.vx_table.set_handle(control);
+            document.header.vpent_hdr_control_handle = control;
+        }
         let missing: Vec<_> = document
             .entities()
             .filter_map(|entity| match entity {
@@ -3941,6 +3948,45 @@ mod tests {
             solids[0].acis_data.sat_data.contains("plane-surface"),
             "SAT data must contain 'plane-surface'"
         );
+    }
+
+    /// lince (fix DWG2000-VP): every paper-space viewport saved to R2000 has its
+    /// VX record (on), as in AutoCAD's SAVEAS 2000, also when the drawing comes
+    /// from an R2004+ file without a VX table control.
+    #[test]
+    fn test_r2000_viewports_have_vx_records() {
+        use crate::entities::{EntityType, Viewport};
+        use crate::io::dwg::DwgReader;
+
+        let mut doc = CadDocument::new();
+        doc.version = DxfVersion::AC1032;
+        for id in 1..=2 {
+            let mut vp = Viewport::new();
+            vp.id = id;
+            doc.add_paper_space_entity(EntityType::Viewport(Box::new(vp))).unwrap();
+        }
+        let modern = DwgReader::from_stream(std::io::Cursor::new(DwgWriter::write_to_vec(&doc).unwrap()))
+            .read()
+            .unwrap();
+        for mut source in [doc, modern] {
+            source.version = DxfVersion::AC1015;
+            let reread = DwgReader::from_stream(std::io::Cursor::new(DwgWriter::write_to_vec(&source).unwrap()))
+                .read()
+                .unwrap();
+            let viewports: Vec<_> = reread
+                .entities()
+                .filter_map(|e| match e {
+                    EntityType::Viewport(v) => Some(v.common.handle),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(viewports.len(), 2);
+            assert!(!reread.vx_table.handle().is_null());
+            for vp in viewports {
+                let vx = reread.vx_table.iter().find(|r| r.viewport == vp);
+                assert!(vx.is_some_and(|r| r.is_on), "viewport {vp:?} without VX record");
+            }
+        }
     }
 
     /// Write a Solid3D with SAT data to DWG R2004, read back, verify SAT preserved.

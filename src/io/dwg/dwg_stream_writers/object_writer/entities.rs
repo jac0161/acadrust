@@ -2430,9 +2430,18 @@ impl<'a> DwgObjectWriter<'a> {
             e.clip_boundary_handle.value(),
         );
 
-        // R2000 (AC1015) only: VIEWPORT ENT HEADER
+        // R2000 (AC1015) only: VIEWPORT ENT HEADER. lince (fix DWG2000-VP):
+        // AutoCAD takes the viewport's on state and number from this record;
+        // with a null handle it opened every viewport off and added another
+        // paper viewport.
         if self.version == crate::io::dwg::dwg_version::DwgVersion::AC15 {
-            self.writer.write_handle(DwgReferenceType::HardPointer, 0);
+            let header = self
+                .document
+                .vx_table
+                .iter()
+                .find(|record| record.viewport == e.common.handle)
+                .map_or(0, |record| record.handle.value());
+            self.writer.write_handle(DwgReferenceType::HardPointer, header);
         }
 
         // Named UCS and Base UCS handles (written for all versions)
