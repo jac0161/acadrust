@@ -84,3 +84,7 @@ Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) sav
 ## 2026-11-09 — entity classes on DWG save
 
 - **dwg_writer.rs**: the classes that the table lacks are now declared for entities too, not only for objects. An IMAGE (or WIPEOUT, MULTILEADER, MESH…) added to a drawing whose source file had none was written with a fixed type code, and AutoCAD 2027 refused the whole drawing (ErrorStatus 53). New test `entity_without_its_class_gets_it_declared`; checked with AutoCAD 2027 (AUDIT 0).
+
+## 2026-11-11 — layout viewports in DWG 2000
+
+- **dwg_writer.rs** (`prepare_legacy_document`) and **entities.rs** (`write_viewport_entity`): R2000 files now get the VX table records (VIEWPORT ENTITY HEADER) and each VIEWPORT links to its record, as R13/R14 already did. Without them AutoCAD 2027 opened R2000 layouts with every viewport off (AUDIT 0, but empty, and `-VPORTS ON` could not turn them on). New test `test_r2000_viewports_have_vx_records`; checked with AutoCAD 2027 (AUDIT 0, viewports active, TRANS deviation ≤ 1e-9) and progeCAD in DWG 2000 and 2018.
