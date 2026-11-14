@@ -234,7 +234,7 @@ mod tests {
     #[test]
     fn test_write_classes_r2004_header() {
         let cls = make_test_class(500, "TEST");
-        let data = write_classes(DxfVersion::AC1018, &[cls.clone()], 0);
+        let data = write_classes(DxfVersion::AC1018, std::slice::from_ref(&cls), 0);
 
         // Should be longer than R2000 version (extra per-class fields + section header)
         let data_r2000 = write_classes(DxfVersion::AC1015, &[cls], 0);

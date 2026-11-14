@@ -1042,8 +1042,11 @@ pub enum AssocConstraintNodeData {
         is_active: bool,
         value_dependency: Handle,
         dimension_dependency: Handle,
+        /// 0 without direction, 1 fixed direction (`distance`), 2 perpendicular and 3 parallel to the line node
+        /// `datum_line_index` (also the third connection of the node).
         direction_type: u8,
         distance: Option<Vector3>,
+        datum_line_index: Option<i32>,
     },
     RadiusDiameter {
         owner_id: i32,

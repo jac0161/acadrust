@@ -70,6 +70,7 @@ pub use writer::{SatWriter, SplineNet};
 ///
 /// The v600 "unknown" string becomes `7 unknown` in legacy SAT (counted string),
 /// which BricsCAD's v400 parser misinterprets as extra tokens.
+#[allow(clippy::ptr_arg)] // API pública: no se cambia la firma
 pub fn downgrade_records_to_v400(records: &mut Vec<SatRecord>) {
     for record in records.iter_mut() {
         if record.entity_type == "edge" {

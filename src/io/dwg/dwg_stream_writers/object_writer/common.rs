@@ -554,6 +554,7 @@ impl<'a> DwgObjectWriter<'a> {
             || lt_lower.is_empty()
             || lt_lower == "byblock"
             || lt_lower == "continuous";
+        #[allow(clippy::unnecessary_unwrap)] // cadena de if/else if: se deja tal cual
         if resolved_linetype.is_some() && (has_preserved_handle || !is_builtin) {
             self.writer.write_2bits(0b11);
             self.writer.write_handle(
@@ -1142,7 +1143,7 @@ impl<'a> DwgObjectWriter<'a> {
     // ── entity-mode helper ──────────────────────────────────────────
     /// Returns the 2-bit entity-mode value (per ODA spec §19.4.4):
     /// - 0 = owned (owner handle present) — VERTEX, ATTRIB, SEQEND,
-    ///       or entity inside a named block
+    ///   or entity inside a named block
     /// - 1 = paper-space entity (BB 01 -> the active paper-space block)
     /// - 2 = model-space entity (BB 10 → *Model_Space)
     ///

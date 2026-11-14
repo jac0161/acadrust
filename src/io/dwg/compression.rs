@@ -149,10 +149,10 @@ impl DwgLZ77AC18Compressor {
         compression_offset: usize,
         mask: usize,
     ) {
-        let curr: u8;
+        
         let next: u8;
 
-        if compression_offset >= 0x0F || match_position > 0x400 {
+        let curr: u8 = if compression_offset >= 0x0F || match_position > 0x400 {
             if match_position <= 0x4000 {
                 match_position -= 1;
                 // compressed_bytes = next Long Compression Offset + 0x21
@@ -175,7 +175,7 @@ impl DwgLZ77AC18Compressor {
             if mask < 4 {
                 c |= mask as u8;
             }
-            curr = c;
+            c
         } else {
             match_position -= 1;
             // compressed_bytes = ((opcode1 & 0xF0) >> 4) - 1
@@ -186,8 +186,8 @@ impl DwgLZ77AC18Compressor {
             if mask < 4 {
                 c |= mask as u8;
             }
-            curr = c;
-        }
+            c
+        };
 
         dest.push(curr);
         dest.push(next);
@@ -333,7 +333,7 @@ mod tests {
     fn test_compress_with_offset() {
         let mut comp = DwgLZ77AC18Compressor::new();
         let mut data = vec![0xFFu8; 10]; // Prefix garbage
-        data.extend_from_slice(&vec![0u8; 100]); // Actual data
+        data.extend_from_slice(&[0u8; 100]); // Actual data
         let result = comp.compress(&data, 10, 100);
         let len = result.len();
         assert_eq!(&result[len - 3..], &[0x11, 0x00, 0x00]);

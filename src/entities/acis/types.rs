@@ -145,7 +145,7 @@ impl SatHeader {
             product_version: "ACIS 7.0".to_string(),
             date: "Thu Jan 01 00:00:00 2023".to_string(),
             spatial_resolution: 10.0,
-            normal_tolerance: 9.9999999999999995e-07,
+            normal_tolerance: 1e-6,
             resfit_tolerance: Some(1e-10),
         }
     }
@@ -707,8 +707,10 @@ impl fmt::Display for SatRecord {
 /// The sense of a surface normal or curve direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub enum Sense {
     /// Forward sense.
+    #[default]
     Forward,
     /// Reversed sense.
     Reversed,
@@ -716,6 +718,7 @@ pub enum Sense {
 
 impl Sense {
     /// Parse from SAT token.
+    #[allow(clippy::should_implement_trait)] // API pública que no falla: FromStr obligaría a devolver Result
     pub fn from_str(s: &str) -> Self {
         match s {
             // Keyword form (ACIS 4.0+) and the numeric form pre-4.0 SAT uses
@@ -735,17 +738,14 @@ impl Sense {
     }
 }
 
-impl Default for Sense {
-    fn default() -> Self {
-        Self::Forward
-    }
-}
 
 /// Surface sidedness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub enum Sidedness {
     /// Single-sided surface.
+    #[default]
     Single,
     /// Double-sided surface.
     Double,
@@ -753,6 +753,7 @@ pub enum Sidedness {
 
 impl Sidedness {
     /// Parse from SAT token.
+    #[allow(clippy::should_implement_trait)] // API pública que no falla: FromStr obligaría a devolver Result
     pub fn from_str(s: &str) -> Self {
         match s {
             "double" | "DOUBLE" => Self::Double,
@@ -769,11 +770,6 @@ impl Sidedness {
     }
 }
 
-impl Default for Sidedness {
-    fn default() -> Self {
-        Self::Single
-    }
-}
 
 // ============================================================================
 // Typed Entity Accessors
@@ -2305,14 +2301,14 @@ fn decode_bspline_surface(tokens: &[SatToken]) -> Option<SatBSplineSurface> {
     for _ in 0..u_knot_count {
         let value = tokens.get(position)?.as_float()?;
         let multiplicity = usize::try_from(tokens.get(position + 1)?.as_integer()?).ok()?;
-        u_knots.extend(std::iter::repeat(value).take(multiplicity));
+        u_knots.extend(std::iter::repeat_n(value, multiplicity));
         position += 2;
     }
     let mut v_knots = Vec::new();
     for _ in 0..v_knot_count {
         let value = tokens.get(position)?.as_float()?;
         let multiplicity = usize::try_from(tokens.get(position + 1)?.as_integer()?).ok()?;
-        v_knots.extend(std::iter::repeat(value).take(multiplicity));
+        v_knots.extend(std::iter::repeat_n(value, multiplicity));
         position += 2;
     }
     if u_knots.len() < 2 || v_knots.len() < 2 {
@@ -2412,7 +2408,7 @@ fn de_boor_homogeneous(degree: usize, knots: &[f64], ctrl: &[[f64; 4]], t: f64) 
     // Knot span k: knots[k] <= t < knots[k+1], clamped into the valid interval.
     let n = ctrl.len();
     let mut k = degree;
-    while k + 1 < knots.len() && knots[k + 1] <= t && k + 1 <= n {
+    while k + 1 < knots.len() && knots[k + 1] <= t && k < n {
         k += 1;
     }
     k = k.min(n - 1).max(degree);

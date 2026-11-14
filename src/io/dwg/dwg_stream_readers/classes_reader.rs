@@ -55,7 +55,7 @@ pub fn read_classes_with_encoding(
     if data.len() < 34 {
         return Err(DxfError::Parse("Classes section too short".to_string()));
     }
-    if &data[..16] != &start_sentinels::CLASSES {
+    if data[..16] != start_sentinels::CLASSES {
         return Err(DxfError::InvalidSentinel(
             "Classes section start sentinel mismatch".to_string(),
         ));
@@ -89,16 +89,16 @@ pub fn read_classes_with_encoding(
     // The writer puts text strings (dxf_name, cpp_class_name, application_name)
     // in a separate text sub-stream. The RL stores the total bit count;
     // the flag bit is at RL − 1 (same convention as per-object records).
-    let end_bit;
-    if version >= DxfVersion::AC1021 {
-        let total_size_bits = reader.read_raw_long() as i64;
+    
+    let end_bit = if version >= DxfVersion::AC1021 {
+        let total_size_bits = reader.read_raw_long();
         let data_start = reader.position_in_bits();
         let text_start = reader.set_position_by_flag(total_size_bits - 1);
         reader.set_position_in_bits(data_start);
-        end_bit = text_start;
+        text_start
     } else {
-        end_bit = (section_size * 8) as i64;
-    }
+        (section_size * 8) as i64
+    };
 
     // ── R2004+: section header ──
     let mut max_class_number: i16 = i16::MAX;
@@ -158,12 +158,11 @@ pub fn read_classes_with_encoding(
 
     // ── Verify end sentinel ──
     let end_sentinel_start = data_start + section_size + 2; // +2 for CRC
-    if data.len() >= end_sentinel_start + 16 {
-        if &data[end_sentinel_start..end_sentinel_start + 16] != &end_sentinels::CLASSES {
+    if data.len() >= end_sentinel_start + 16
+        && data[end_sentinel_start..end_sentinel_start + 16] != end_sentinels::CLASSES {
             // Non-fatal: log warning but don't fail
             // Some writers produce slightly off sentinels
         }
-    }
 
     Ok(classes)
 }

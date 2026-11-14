@@ -155,7 +155,7 @@ fn ac21_page_layout(
             total_size, compressed_size, correction_factor, aligned
         )));
     }
-    let factor = (total_size + block_size - 1) / block_size;
+    let factor = total_size.div_ceil(block_size);
     Ok((total_size, factor, factor * 255))
 }
 
@@ -309,6 +309,7 @@ pub struct DwgPageCrcInfo {
 /// `mesh-face-budget` diagnostic.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub struct DwgReadOptions {
     /// When `true`, recover as much data as possible from corrupt files.
     pub failsafe: bool,
@@ -336,16 +337,6 @@ pub struct DwgReadOptions {
     pub max_decompressed_bytes: Option<usize>,
 }
 
-impl Default for DwgReadOptions {
-    fn default() -> Self {
-        Self {
-            failsafe: false,
-            max_mesh_faces: None,
-            max_mesh_face_indices: None,
-            max_decompressed_bytes: None,
-        }
-    }
-}
 
 impl DwgReadOptions {
     /// Create options with failsafe mode enabled.
@@ -731,7 +722,7 @@ fn attach_acds_sab_blobs(
     let ordered = std::mem::take(&mut document.acis_sab_handles);
     if !ordered.is_empty() {
         let mut attached = 0usize;
-        for (handle, blob) in ordered.into_iter().zip(blobs.into_iter()) {
+        for (handle, blob) in ordered.into_iter().zip(blobs) {
             if let Some(entity) = document.get_entity_mut(handle) {
                 if acds_apply(entity, blob) {
                     attached += 1;
@@ -3964,5 +3955,39 @@ mod damaged_file_tests {
         std::panic::set_hook(Box::new(move |info| previous(info)));
         assert!(matches!(joined, Ok(Ok(()))));
         assert_eq!(panics.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod autocad_sample_tests {
+    /// lince (DWG-03): AutoCAD 2027's R2007 samples with data links and
+    /// tables. They did not open: DATALINK custom data read a text per entry,
+    /// a linked TABLECONTENT cell stores 3 (not 1) and the table override flag
+    /// 0x0002 stores no bit. Each must read strictly, with every record decoded.
+    #[test]
+    #[ignore = "needs AutoCAD 2027's sample drawings"]
+    fn autocad_2027_r2007_table_samples_open() {
+        let base = r"C:\Program Files\Autodesk\AutoCAD 2027\Sample\";
+        for file in [
+            r"Mechanical Sample\Data Extraction and Multileaders Sample.dwg",
+            r"Mechanical Sample\Mechanical - Data Links.dwg",
+            r"Mechanical Sample\Mechanical - Text and Tables.dwg",
+            r"Sheet Sets\Architectural\A-03.dwg",
+            r"Sheet Sets\Architectural\T-01.dwg",
+            r"Sheet Sets\Civil\Drainage Summary.dwg",
+            r"Sheet Sets\Civil\Title Sheet.dwg",
+            r"Sheet Sets\Manufacturing\Cover Sheet.dwg",
+        ] {
+            let path = format!("{base}{file}");
+            if !std::path::Path::new(&path).exists() {
+                eprintln!("skipped, not installed: {path}");
+                continue;
+            }
+            super::DwgReader::from_file(&path)
+                .and_then(|mut reader| reader.read())
+                .unwrap_or_else(|error| panic!("{file}: {error}"));
+            let outcome = super::DwgReader::from_file(&path).unwrap().recover().unwrap();
+            assert!(outcome.stats.diagnostics.is_empty(), "{file}: {:?}", outcome.stats.diagnostics);
+        }
     }
 }

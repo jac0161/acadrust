@@ -88,7 +88,7 @@ impl TriangleAssembler {
         mesh.faces = self.faces;
         mesh.compute_edges();
         mesh.edges
-            .sort_by(|left, right| (left.start, left.end).cmp(&(right.start, right.end)));
+            .sort_by_key(|edge| (edge.start, edge.end));
         mesh
     }
 
@@ -102,7 +102,7 @@ impl TriangleAssembler {
                 };
                 for &index in bucket {
                     let distance = (self.vertices[index] - position).length_squared();
-                    if distance <= self.tol2 && best.map_or(true, |(_, best_d)| distance < best_d) {
+                    if distance <= self.tol2 && best.is_none_or(|(_, best_d)| distance < best_d) {
                         best = Some((index, distance));
                     }
                 }

@@ -10,8 +10,8 @@ use crate::types::{Matrix3, Transform, Vector2, Vector3};
 /// Compose `transform` into an ACIS body's placement (the SAT `transform`
 /// record) so the solid's actual geometry moves/rotates/scales, instead of
 /// only nudging a reference point. ACIS keeps geometry in body-local space
-/// and a `transform` record places it into the world as `world = scale·(p·M)
-/// + T`; we fold the incoming world transform into that placement and bake
+/// and a `transform` record places it into the world as
+/// `world = scale·(p·M) + T`; we fold the incoming world transform into that placement and bake
 /// the result into a single 3×3 (scale = 1), which the tessellator applies
 /// verbatim. Binary SAB is decoded, composed, and rewritten as text SAT
 /// (the SAB writer is not lossless for this edit). A parse failure leaves

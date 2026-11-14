@@ -2527,7 +2527,7 @@ impl CadDocument {
                 match named {
                     Some((_, n)) if n.cell_style.content_format.text_height > 0.0 => (
                         n.cell_style.content_format.text_height,
-                        n.cell_style.content_format.cell_alignment as i32,
+                        n.cell_style.content_format.cell_alignment,
                     ),
                     _ => {
                         let rs = [&s.title_row_style, &s.header_row_style, &s.data_row_style][kind];
@@ -2612,11 +2612,11 @@ impl CadDocument {
                 // lince (fix: the row style's background fills its cells too, and the
                 // corners go as AutoCAD writes them: top-left, bottom-left, top-right, bottom-right).
                 let fill = match style_sets(P::BACKGROUND_COLOR) {
-                    Some(s) => s.fill_enabled.then(|| s.background_color.clone()),
+                    Some(s) => s.fill_enabled.then_some(s.background_color),
                     None => row_fmt
                         .as_ref()
                         .filter(|f| f.fill_enabled)
-                        .map(|f| f.fill_color.clone()),
+                        .map(|f| f.fill_color),
                 };
                 if let Some(color) = fill {
                     let (w, h) = span[r][c];
@@ -2665,7 +2665,7 @@ impl CadDocument {
                 m.attachment_point = attachment(align);
                 m.drawing_direction = crate::entities::DrawingDirection::ByStyle;
                 if let Some(f) = &row_fmt {
-                    m.common.color = f.text_color.clone();
+                    m.common.color = f.text_color;
                     let name = f
                         .text_style_handle
                         .and_then(|h| self.text_styles.iter().find(|st| st.handle == h))
@@ -2676,7 +2676,7 @@ impl CadDocument {
                     }
                 }
                 if let Some(c) = content_sets(P::CONTENT_COLOR) {
-                    m.common.color = c.color.clone();
+                    m.common.color = c.color;
                 }
                 if let Some(s) = content_sets(P::TEXT_STYLE) {
                     let name = if s.text_style_name.is_empty() {
@@ -3814,6 +3814,21 @@ pub fn evaluate_code(
     })
 }
 
+fn attachment(align: i32) -> crate::entities::AttachmentPoint {
+    use crate::entities::AttachmentPoint as A;
+    match align {
+        1 => A::TopLeft,
+        2 => A::TopCenter,
+        3 => A::TopRight,
+        4 => A::MiddleLeft,
+        6 => A::MiddleRight,
+        7 => A::BottomLeft,
+        8 => A::BottomCenter,
+        9 => A::BottomRight,
+        _ => A::MiddleCenter,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3837,20 +3852,5 @@ mod tests {
         );
         assert_eq!(num_str(5.0), "5");
         assert_eq!(rtos(std::f64::consts::PI, Some(2)), "3.14");
-    }
-}
-
-fn attachment(align: i32) -> crate::entities::AttachmentPoint {
-    use crate::entities::AttachmentPoint as A;
-    match align {
-        1 => A::TopLeft,
-        2 => A::TopCenter,
-        3 => A::TopRight,
-        4 => A::MiddleLeft,
-        6 => A::MiddleRight,
-        7 => A::BottomLeft,
-        8 => A::BottomCenter,
-        9 => A::BottomRight,
-        _ => A::MiddleCenter,
     }
 }

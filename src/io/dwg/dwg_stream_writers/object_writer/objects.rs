@@ -197,7 +197,7 @@ fn transcode_xrecord_xdata(
             let bytes = &encoded[..encoded.len().min(u16::MAX as usize)];
             out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
             out.push(target_code_page);
-            out.extend_from_slice(&bytes);
+            out.extend_from_slice(bytes);
         }
     }
     out.extend_from_slice(&raw[p..]);
@@ -1524,12 +1524,12 @@ impl<'a> DwgObjectWriter<'a> {
     /// them, which emptied ACAD_VISUALSTYLE and ACAD_MATERIAL in e.g. a
     /// 2000 -> 2004 save; AutoCAD then reported "Paperspace Viewport Visual
     /// Style Not Valid" (files 04 and 08, and R14 saves of 01, 04, 05, 37).
+    /// lince (VS-02): from a 2007+ drawing too, as AutoCAD's SAVEAS does: they
+    /// were left out, and AutoCAD rebuilt both dictionaries on opening, with
+    /// new handles and without the drawing's own styles.
     fn pre2007_layout_compatible(&self) -> bool {
         let target = matches!(self.dxf_version, DxfVersion::AC1015 | DxfVersion::AC1018);
-        let source = |v: DxfVersion| matches!(v, DxfVersion::AC1014 | DxfVersion::AC1015 | DxfVersion::AC1018);
-        self.version.r2007_plus()
-            || self.document.dwg_source_version == Some(self.dxf_version)
-            || (target && self.document.dwg_source_version.is_some_and(source))
+        self.version.r2007_plus() || self.document.dwg_source_version == Some(self.dxf_version) || target
     }
 
     /// Returns `true` when the record at `handle` will be serialized.
@@ -1631,7 +1631,7 @@ impl<'a> DwgObjectWriter<'a> {
 
         // R2000+: Cloning flag (BS 281) + Hard-owner flag (RC)
         if self.version.r2000_plus() {
-            self.writer.write_bit_short(dict.duplicate_cloning as i16);
+            self.writer.write_bit_short(dict.duplicate_cloning);
             self.writer.write_byte(if dict.hard_owner { 1 } else { 0 });
         }
 
@@ -1676,7 +1676,7 @@ impl<'a> DwgObjectWriter<'a> {
         self.writer.write_bit_long(entries.len() as i32);
 
         // Unlike a plain DICTIONARY, these fields are present in R13/R14 too.
-        self.writer.write_bit_short(dict.duplicate_cloning as i16);
+        self.writer.write_bit_short(dict.duplicate_cloning);
         self.writer.write_byte(if dict.hard_owner { 1 } else { 0 });
 
         for (name, handle) in &entries {

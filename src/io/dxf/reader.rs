@@ -27,6 +27,7 @@ use std::path::Path;
 /// Configuration for the DXF reader.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub struct DxfReaderConfiguration {
     /// When `true`, parse errors within individual entities/objects/sections
     /// are caught and reported as notifications instead of aborting the read.
@@ -41,14 +42,6 @@ pub struct DxfReaderConfiguration {
     pub default_encoding: Option<String>,
 }
 
-impl Default for DxfReaderConfiguration {
-    fn default() -> Self {
-        Self {
-            failsafe: false,
-            default_encoding: None,
-        }
-    }
-}
 
 /// DXF file reader
 pub struct DxfReader {

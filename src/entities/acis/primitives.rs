@@ -1598,6 +1598,7 @@ pub fn build_planar_body(vertices: &[[f64; 3]], faces: &[Vec<usize>]) -> Option<
                 return None;
             }
             let key = if a < b { (a, b) } else { (b, a) };
+            #[allow(clippy::map_entry)] // el cuerpo sale con `return None` y usa `sat` antes de insertar
             if !edges.contains_key(&key) {
                 let sp = vertices[a];
                 let dir = vsub(vertices[b], sp);

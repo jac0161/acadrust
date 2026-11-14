@@ -36,7 +36,7 @@ fn test_native_standalone_refusal_rules() {
     ))
     .explode()
     .is_empty());
-    let parts = EntityType::Helix(Box::new(Helix::new())).explode();
+    let parts = EntityType::Helix(Box::default()).explode();
     assert_eq!(parts.len(), 1);
     assert!(matches!(parts[0], EntityType::Spline(_)));
 }

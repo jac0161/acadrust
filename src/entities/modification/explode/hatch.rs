@@ -327,7 +327,7 @@ fn path_polygon(path: &BoundaryPath, bounds: &mut Bounds) -> Vec<Vector2> {
             bounds.add(p);
             if polygon
                 .last()
-                .map_or(true, |q: &Vector2| q.distance(&p) > 1e-8)
+                .is_none_or(|q: &Vector2| q.distance(&p) > 1e-8)
             {
                 polygon.push(p);
             }
@@ -401,7 +401,7 @@ fn polyline_samples(e: &PolylineEdge) -> Vec<Vector2> {
             for j in 0..=n {
                 let t = start + if ccw { 1.0 } else { -1.0 } * sweep.abs() * j as f64 / n as f64;
                 let p = center + Vector2::new(radius * t.cos(), radius * t.sin());
-                if out.last().map_or(true, |q: &Vector2| q.distance(&p) > 1e-8) {
+                if out.last().is_none_or(|q: &Vector2| q.distance(&p) > 1e-8) {
                     out.push(p);
                 }
             }
@@ -551,7 +551,7 @@ fn intersect_line_segment(p: Vector2, d: Vector2, e: &LineEdge, out: &mut Vec<f6
     let q = e.start - p;
     let t = q.cross(&v) / den;
     let u = q.cross(&d) / den;
-    if u >= -INTERSECTION_EPS && u <= 1.0 + INTERSECTION_EPS {
+    if (-INTERSECTION_EPS..=1.0 + INTERSECTION_EPS).contains(&u) {
         out.push(t);
     }
 }
@@ -696,7 +696,7 @@ fn inside_fill(point: Vector2, loops: &[LoopGeometry], style: HatchStyleType) ->
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(i, _)| i);
-            outer.map_or(false, |i| contains[i])
+            outer.is_some_and(|i| contains[i])
         }
         HatchStyleType::Normal => contains.into_iter().filter(|v| *v).count() % 2 == 1,
     }

@@ -260,6 +260,11 @@ impl ClassObjectData {
                     visit(&mut data.target);
                 }
                 visit(&mut value.hard_owner);
+                for data in &mut value.named_values {
+                    if let Some(handle) = data.value.handle_value.as_mut() {
+                        visit(handle);
+                    }
+                }
             }
             Self::DetailViewStyle(value) => {
                 visit(&mut value.identifier_style);
@@ -1225,6 +1230,9 @@ pub struct DataLink {
     pub update_status: String,
     pub custom_data: Vec<DataLinkCustomData>,
     pub hard_owner: Handle,
+    /// Named values after the custom data (an Excel link's ACEXCEL_* options);
+    /// empty for links that store none.
+    pub named_values: Vec<crate::entities::table::TableCustomData>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -90,7 +90,7 @@ impl<W: Write> DxfBinaryWriter<W> {
                 self.write_double(code, text.parse().map_err(|_| invalid())?)?
             }
             GroupCodeValueType::BinaryData => {
-                if text.len() % 2 != 0 {
+                if !text.len().is_multiple_of(2) {
                     return Err(invalid());
                 }
                 let data = text
@@ -178,8 +178,7 @@ impl<W: Write> DxfStreamWriter for DxfBinaryWriter<W> {
         if value.contains('\n') || value.contains('\r') {
             let sanitized = value
                 .replace("\r\n", "\\P")
-                .replace('\r', "\\P")
-                .replace('\n', "\\P");
+                .replace(['\r', '\n'], "\\P");
             self.write_null_string(&sanitized)?;
         } else {
             self.write_null_string(value)?;

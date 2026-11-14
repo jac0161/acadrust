@@ -394,8 +394,8 @@ fn read_fbx_node(
 
     // Read children
     let mut children = Vec::new();
-    if end_offset > 0 && (cursor.position() as u64) < end_offset {
-        while (cursor.position() as u64) < end_offset {
+    if end_offset > 0 && cursor.position() < end_offset {
+        while cursor.position() < end_offset {
             match read_fbx_node(data, cursor, use_64bit)? {
                 None => break, // NULL terminator
                 Some(child) => children.push(child),

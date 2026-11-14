@@ -207,7 +207,7 @@ impl<R: Read + Seek> DxfBinaryReader<R> {
                 DxfCodePair::new(code, hex)
             }
 
-            GroupCodeValueType::Handle | _ => {
+            _ => {
                 let s = self.read_null_terminated_string()?;
                 DxfCodePair::new(code, s)
             }

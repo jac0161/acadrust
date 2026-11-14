@@ -1155,8 +1155,8 @@ fn mirror_invalidates_verbatim_dwg_geometry_records() {
         EntityType::Ellipse(Ellipse::new()),
         EntityType::LwPolyline(LwPolyline::new()),
         EntityType::Text(Text::new()),
-        EntityType::MText(Box::new(MText::new())),
-        EntityType::Hatch(Box::new(Hatch::new())),
+        EntityType::MText(Box::default()),
+        EntityType::Hatch(Box::default()),
         EntityType::Face3D(Face3D::triangle(
             Vector3::ZERO,
             Vector3::UNIT_X,

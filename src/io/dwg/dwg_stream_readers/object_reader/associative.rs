@@ -993,7 +993,8 @@ fn read_constraint_node_data(
                 value_dependency,
                 dimension_dependency,
                 direction_type,
-                distance: (direction_type != 0).then(|| reader.read_3bit_double()),
+                distance: (direction_type == 1).then(|| reader.read_3bit_double()),
+                datum_line_index: matches!(direction_type, 2 | 3).then(|| reader.read_bit_long()),
             }
         }
         "ACRADIUSDIAMETERCONSTRAINT" => {

@@ -191,6 +191,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::vec_init_then_push)] // un push por byte, cada uno con su comentario
     fn test_handle_reader_basic() {
         // Build a chunk with 2 handle-offset pairs using correct MC/SMC encoding
         let mut chunk_data = Vec::new();

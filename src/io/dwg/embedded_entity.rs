@@ -46,7 +46,7 @@ fn preserves_embedded_body(
     if encoded.type_code != type_code
         || encoded.bit_length > bit_length
         || bit_length - encoded.bit_length > 7
-        || (encoded.bit_length != bit_length && bit_length % 8 != 0)
+        || (encoded.bit_length != bit_length && !bit_length.is_multiple_of(8))
         || bytes.len() < bit_length.div_ceil(8)
         || encoded.bytes.len() < encoded.bit_length.div_ceil(8)
     {
@@ -268,25 +268,6 @@ pub(crate) fn decode_embedded_entity(
         })
     } else {
         entity
-    }
-}
-
-#[cfg(test)]
-mod malformed_tests {
-    use super::*;
-
-    #[test]
-    fn truncated_embedded_curves_remain_opaque() {
-        for type_code in [common::OBJ_LINE, common::OBJ_SPLINE, common::OBJ_LWPOLYLINE] {
-            let decoded = decode_embedded_entity(
-                type_code as i32,
-                1,
-                vec![0],
-                DwgVersion::AC24,
-                DxfVersion::AC1024,
-            );
-            assert!(matches!(decoded, Some(EmbeddedEntity::Unknown { .. })));
-        }
     }
 }
 
@@ -556,6 +537,25 @@ fn write_spline(
         writer.write_bit_long(entity.fit_points.len() as i32);
         for point in &entity.fit_points {
             writer.write_3bit_double(*point);
+        }
+    }
+}
+
+#[cfg(test)]
+mod malformed_tests {
+    use super::*;
+
+    #[test]
+    fn truncated_embedded_curves_remain_opaque() {
+        for type_code in [common::OBJ_LINE, common::OBJ_SPLINE, common::OBJ_LWPOLYLINE] {
+            let decoded = decode_embedded_entity(
+                type_code as i32,
+                1,
+                vec![0],
+                DwgVersion::AC24,
+                DxfVersion::AC1024,
+            );
+            assert!(matches!(decoded, Some(EmbeddedEntity::Unknown { .. })));
         }
     }
 }

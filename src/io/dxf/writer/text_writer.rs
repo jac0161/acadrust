@@ -73,7 +73,7 @@ impl<W: Write> DxfTextWriter<W> {
         let mut ibuf = itoa::Buffer::new();
         let s = ibuf.format(value);
         let slen = s.len();
-        let pad = if slen < 6 { 6 - slen } else { 0 };
+        let pad = 6_usize.saturating_sub(slen);
         let total = pad + slen + 2; // +2 for \r\n
         self.fmt_buf[..pad].fill(b' ');
         self.fmt_buf[pad..pad + slen].copy_from_slice(s.as_bytes());
@@ -183,8 +183,7 @@ impl<W: Write> DxfStreamWriter for DxfTextWriter<W> {
         if value.contains('\n') || value.contains('\r') {
             let sanitized = value
                 .replace("\r\n", "\\P")
-                .replace('\r', "\\P")
-                .replace('\n', "\\P");
+                .replace(['\r', '\n'], "\\P");
             self.write_text_crlf(&sanitized)?;
         } else {
             self.write_text_crlf(value)?;

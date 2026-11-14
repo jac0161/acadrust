@@ -79,6 +79,7 @@ pub(crate) mod embedded_entity;
 pub mod file_headers;
 pub(crate) mod legacy_viewport;
 mod mesh_budget;
+pub(crate) mod mtext_defined_height;
 mod parallel;
 pub mod preview;
 pub mod r12;

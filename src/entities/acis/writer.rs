@@ -940,6 +940,64 @@ impl SatDocument {
     }
 }
 
+/// A spline surface's control net as an ACIS 7 `bs3_surface` takes it (see
+/// [`SatDocument::add_spline_surface`] for the fields).
+pub struct SplineNet<'a> {
+    pub rational: bool,
+    pub deg_u: i32,
+    pub deg_v: i32,
+    pub u_closed: bool,
+    pub v_closed: bool,
+    pub u_knots: &'a [(f64, i32)],
+    pub v_knots: &'a [(f64, i32)],
+    pub control: &'a [[f64; 3]],
+    pub weights: Option<&'a [f64]>,
+    pub fit_tol: f64,
+}
+
+/// `full nubs|nurbs ...` through the fit tolerance and six empty
+/// discontinuity lists.
+fn bs3_tokens(net: &SplineNet) -> Vec<SatToken> {
+    let id = |s: &str| SatToken::Ident(s.to_string());
+    let mut tokens = vec![
+        SatToken::Enum("full".to_string()),
+        id(if net.rational { "nurbs" } else { "nubs" }),
+        SatToken::Integer(net.deg_u as i64),
+        SatToken::Integer(net.deg_v as i64),
+    ];
+    if net.rational {
+        tokens.push(id("both"));
+    }
+    tokens.push(SatToken::Enum(
+        if net.u_closed { "closed" } else { "open" }.to_string(),
+    ));
+    tokens.push(SatToken::Enum(
+        if net.v_closed { "closed" } else { "open" }.to_string(),
+    ));
+    tokens.push(SatToken::Enum("none".to_string()));
+    tokens.push(SatToken::Enum("none".to_string()));
+    tokens.push(SatToken::Integer(net.u_knots.len() as i64));
+    tokens.push(SatToken::Integer(net.v_knots.len() as i64));
+    for knots in [net.u_knots, net.v_knots] {
+        for (position, &(knot, mult)) in knots.iter().enumerate() {
+            tokens.push(SatToken::Float(knot));
+            let implicit = i32::from(position == 0 || position + 1 == knots.len());
+            tokens.push(SatToken::Integer((mult - implicit) as i64));
+        }
+    }
+    for (i, p) in net.control.iter().enumerate() {
+        tokens.extend(p.iter().map(|c| SatToken::Float(*c)));
+        if net.rational {
+            let w = net.weights.and_then(|w| w.get(i)).copied().unwrap_or(1.0);
+            tokens.push(SatToken::Float(w));
+        }
+    }
+    tokens.push(SatToken::Float(net.fit_tol));
+    // Empty U/V discontinuity lists.
+    tokens.extend((0..6).map(|_| SatToken::Integer(0)));
+    tokens
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1173,62 +1231,4 @@ mod tests {
             re.validate()
         );
     }
-}
-
-/// A spline surface's control net as an ACIS 7 `bs3_surface` takes it (see
-/// [`SatDocument::add_spline_surface`] for the fields).
-pub struct SplineNet<'a> {
-    pub rational: bool,
-    pub deg_u: i32,
-    pub deg_v: i32,
-    pub u_closed: bool,
-    pub v_closed: bool,
-    pub u_knots: &'a [(f64, i32)],
-    pub v_knots: &'a [(f64, i32)],
-    pub control: &'a [[f64; 3]],
-    pub weights: Option<&'a [f64]>,
-    pub fit_tol: f64,
-}
-
-/// `full nubs|nurbs ...` through the fit tolerance and six empty
-/// discontinuity lists.
-fn bs3_tokens(net: &SplineNet) -> Vec<SatToken> {
-    let id = |s: &str| SatToken::Ident(s.to_string());
-    let mut tokens = vec![
-        SatToken::Enum("full".to_string()),
-        id(if net.rational { "nurbs" } else { "nubs" }),
-        SatToken::Integer(net.deg_u as i64),
-        SatToken::Integer(net.deg_v as i64),
-    ];
-    if net.rational {
-        tokens.push(id("both"));
-    }
-    tokens.push(SatToken::Enum(
-        if net.u_closed { "closed" } else { "open" }.to_string(),
-    ));
-    tokens.push(SatToken::Enum(
-        if net.v_closed { "closed" } else { "open" }.to_string(),
-    ));
-    tokens.push(SatToken::Enum("none".to_string()));
-    tokens.push(SatToken::Enum("none".to_string()));
-    tokens.push(SatToken::Integer(net.u_knots.len() as i64));
-    tokens.push(SatToken::Integer(net.v_knots.len() as i64));
-    for knots in [net.u_knots, net.v_knots] {
-        for (position, &(knot, mult)) in knots.iter().enumerate() {
-            tokens.push(SatToken::Float(knot));
-            let implicit = i32::from(position == 0 || position + 1 == knots.len());
-            tokens.push(SatToken::Integer((mult - implicit) as i64));
-        }
-    }
-    for (i, p) in net.control.iter().enumerate() {
-        tokens.extend(p.iter().map(|c| SatToken::Float(*c)));
-        if net.rational {
-            let w = net.weights.and_then(|w| w.get(i)).copied().unwrap_or(1.0);
-            tokens.push(SatToken::Float(w));
-        }
-    }
-    tokens.push(SatToken::Float(net.fit_tol));
-    // Empty U/V discontinuity lists.
-    tokens.extend((0..6).map(|_| SatToken::Integer(0)));
-    tokens
 }

@@ -324,7 +324,7 @@ impl SabWriter {
         let mut active_steps = layout.steps;
 
         // Skip the first Pointer token (v700 unknown/$-1) to count geometry tokens
-        let geom_start = tokens.iter().position(|t| Self::is_numeric(t));
+        let geom_start = tokens.iter().position(Self::is_numeric);
 
         while i < tokens.len() {
             // ACIS subtype names and geometry keywords use identifier tags,
@@ -800,7 +800,7 @@ impl SabWriter {
                 return Vec::new();
             };
             let values = position + 1..position + 1 + count;
-            if tokens.get(values.clone()).map_or(true, |values| {
+            if tokens.get(values.clone()).is_none_or(|values| {
                 values.iter().any(|value| value.as_float().is_none())
             }) {
                 return Vec::new();
@@ -1031,10 +1031,8 @@ impl SabReader {
         // u32 begins 15 bytes in: ACIS's magic is 15 bytes; ASM's 14-byte magic
         // is followed by one trailing byte before the header ints.
         const SAB_MAGIC_ASM: &[u8] = b"ASM BinaryFile";
-        let mut pos = if data.starts_with(SAB_MAGIC) {
-            SAB_MAGIC.len()
-        } else if data.starts_with(SAB_MAGIC_ASM) {
-            SAB_MAGIC.len() // 15 = 14-byte ASM magic + 1 trailing byte
+        let mut pos = if data.starts_with(SAB_MAGIC) || data.starts_with(SAB_MAGIC_ASM) {
+            SAB_MAGIC.len() // 15 = ACIS magic, or 14-byte ASM magic + 1 trailing byte
         } else {
             return Err(SabError::InvalidMagic);
         };
@@ -1154,7 +1152,7 @@ impl SabReader {
         // We collect all 0x0E subtypes, then read the final 0x0D base type,
         // and join them with hyphens to reconstruct the SAT entity type name.
         let mut subtype_parts: Vec<String> = Vec::new();
-        let entity_type;
+        
 
         // Collect all subtype prefixes (0x0E)
         while pos < data.len() && data[pos] == tags::SUBTYPE {
@@ -1176,12 +1174,12 @@ impl SabReader {
         pos = new_pos;
 
         // Reconstruct compound name: subtypes joined with hyphens + base type
-        if subtype_parts.is_empty() {
-            entity_type = base_type;
+        let entity_type = if subtype_parts.is_empty() {
+            base_type
         } else {
             subtype_parts.push(base_type);
-            entity_type = subtype_parts.join("-");
-        }
+            subtype_parts.join("-")
+        };
 
         let subtype_name = if entity_type.contains('-') {
             Some(entity_type.split('-').next().unwrap().to_string())
@@ -1538,7 +1536,7 @@ fn name_spline_keywords(entity_type: &str, tokens: &mut [SatToken]) {
 ///   - edge sense: `forward` / `reversed`
 ///   - surface sense: `forward_v` / `reversed_v`
 ///   - surface bounds: `I` (infinite) / `F` (finite)
-fn convert_sab_booleans(entity_type: &str, tokens: &mut Vec<SatToken>) {
+fn convert_sab_booleans(entity_type: &str, tokens: &mut [SatToken]) {
     match base_entity_type(entity_type) {
         "face" => {
             // Modern faces end in sense, sidedness, and containment. The

@@ -243,7 +243,7 @@ impl DwgFileHeaderWriterAC18 {
         self.write_magic_number(output)?;
 
         // Record page position
-        let position = output.seek(SeekFrom::Current(0))? as i64;
+        let position = output.stream_position()? as i64;
 
         let mut local_map = DwgLocalSectionMap::new();
         local_map.offset = offset as u64;
@@ -300,7 +300,7 @@ impl DwgFileHeaderWriterAC18 {
         if local_map.page_number > 0 {
             descriptor.page_count += 1;
         }
-        local_map.size = output.seek(SeekFrom::Current(0))? as i64 - position;
+        local_map.size = output.stream_position()? as i64 - position;
 
         descriptor.local_sections.push(local_map.clone());
         self.local_section_maps.push(local_map);
@@ -390,13 +390,13 @@ impl DwgFileHeaderWriterAC18 {
         // Write as section map page (0x4163003B)
         let section_holder = self.set_seeker(output, PAGE_TYPE_SECTION_MAP, &stream)?;
         let padding = compression_padding(
-            (output.seek(SeekFrom::Current(0))? as i64 - section_holder.seeker) as usize,
+            (output.stream_position()? as i64 - section_holder.seeker) as usize,
         );
         let magic = magic_sequence();
         output.write_all(&magic[..padding])?;
 
         let mut holder = section_holder;
-        holder.size = output.seek(SeekFrom::Current(0))? as i64 - holder.seeker;
+        holder.size = output.stream_position()? as i64 - holder.seeker;
 
         self.add_local_section(holder);
 
@@ -412,7 +412,7 @@ impl DwgFileHeaderWriterAC18 {
         self.add_local_section(section.clone());
 
         let counter = self.local_section_maps.len() * 8;
-        section.seeker = output.seek(SeekFrom::Current(0))? as i64;
+        section.seeker = output.stream_position()? as i64;
         let size = counter + compression_padding(counter);
         section.size = size as i64;
 
@@ -453,7 +453,7 @@ impl DwgFileHeaderWriterAC18 {
     /// Write the file metadata at offset 0 and append the second file header.
     fn write_file_metadata<W: Write + Seek>(&mut self, output: &mut W) -> Result<(), DxfError> {
         // Second header address = current end of file
-        self.second_header_addr = output.seek(SeekFrom::Current(0))?;
+        self.second_header_addr = output.stream_position()?;
 
         // Build and write inner file header
         let inner_header = self.build_inner_file_header()?;
@@ -620,7 +620,7 @@ impl DwgFileHeaderWriterAC18 {
 
     /// Write magic sequence bytes to align the stream to a 0x20-byte boundary.
     fn write_magic_number<W: Write + Seek>(&self, output: &mut W) -> Result<(), DxfError> {
-        let pos = output.seek(SeekFrom::Current(0))? as usize;
+        let pos = output.stream_position()? as usize;
         let padding = pos % 0x20;
         if padding > 0 {
             let magic = magic_sequence();
@@ -645,7 +645,7 @@ impl DwgFileHeaderWriterAC18 {
         let mut holder = DwgLocalSectionMap::with_section_map(section_map_type);
 
         self.write_magic_number(output)?;
-        holder.seeker = output.seek(SeekFrom::Current(0))? as i64;
+        holder.seeker = output.stream_position()? as i64;
 
         self.compress_checksum(output, &mut holder, data)?;
 
@@ -789,7 +789,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::HEADER,
-                &vec![0xAA; 100],
+                &[0xAA; 100],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -798,7 +798,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::CLASSES,
-                &vec![0xBB; 200],
+                &[0xBB; 200],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -842,7 +842,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::HEADER,
-                &vec![0xAA; 100],
+                &[0xAA; 100],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -851,7 +851,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::CLASSES,
-                &vec![0xBB; 50],
+                &[0xBB; 50],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -860,7 +860,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::SUMMARY_INFO,
-                &vec![0; 10],
+                &[0; 10],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -869,7 +869,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::PREVIEW,
-                &vec![0xCC; 20],
+                &[0xCC; 20],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -878,7 +878,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::APP_INFO,
-                &vec![0xDD; 30],
+                &[0xDD; 30],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -887,7 +887,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::AUX_HEADER,
-                &vec![0; 50],
+                &[0; 50],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -905,7 +905,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::HANDLES,
-                &vec![0xFF; 100],
+                &[0xFF; 100],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -938,7 +938,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::HEADER,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -947,7 +947,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::CLASSES,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -956,7 +956,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::SUMMARY_INFO,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -965,7 +965,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::PREVIEW,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -974,7 +974,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::APP_INFO,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -983,7 +983,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::AUX_HEADER,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -992,7 +992,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::ACDB_OBJECTS,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -1001,7 +1001,7 @@ mod tests {
                 .add_section(
                     &mut output,
                     names::HANDLES,
-                    &vec![0; 10],
+                    &[0; 10],
                     true,
                     DEFAULT_DECOMP_SIZE,
                 )
@@ -1054,7 +1054,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::HEADER,
-                &vec![0xAA; 100],
+                &[0xAA; 100],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -1063,7 +1063,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::CLASSES,
-                &vec![0xBB; 50],
+                &[0xBB; 50],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -1072,7 +1072,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::SUMMARY_INFO,
-                &vec![0; 10],
+                &[0; 10],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -1081,7 +1081,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::PREVIEW,
-                &vec![0xCC; 20],
+                &[0xCC; 20],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -1090,7 +1090,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::APP_INFO,
-                &vec![0xDD; 30],
+                &[0xDD; 30],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -1099,7 +1099,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::AUX_HEADER,
-                &vec![0; 50],
+                &[0; 50],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )
@@ -1117,7 +1117,7 @@ mod tests {
             .add_section(
                 &mut output,
                 names::HANDLES,
-                &vec![0xFF; 100],
+                &[0xFF; 100],
                 true,
                 DEFAULT_DECOMP_SIZE,
             )

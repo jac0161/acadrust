@@ -183,7 +183,7 @@ pub fn read_visual_style(
     if let Some(VisualStyleProperty {
         value: VisualStylePropertyValue::Long(v),
         ..
-    }) = properties.get(0)
+    }) = properties.first()
     {
         value.face_lighting_model = *v as i16;
     }

@@ -175,6 +175,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 dimension_dependency,
                 direction_type,
                 distance,
+                datum_line_index,
             } => {
                 self.writer.write_i32(90, *owner_id)?;
                 self.writer.write_bool(290, *is_implied)?;
@@ -184,6 +185,9 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 self.writer.write_byte(280, *direction_type)?;
                 if let Some(distance) = distance {
                     self.writer.write_point3d(10, *distance)?;
+                }
+                if let Some(datum_line_index) = datum_line_index {
+                    self.writer.write_i32(90, *datum_line_index)?;
                 }
             }
             AssocConstraintNodeData::RadiusDiameter {

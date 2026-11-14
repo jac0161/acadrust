@@ -947,12 +947,22 @@ pub fn read_class_object_data(
             let path_option = reader.read_bit_short();
             let status_flags = reader.read_bit_long();
             let update_status = reader.read_variable_text();
+            // Each custom-data entry is only a handle (AcSm and DataExtraction
+            // links store nothing else). An Excel link follows it with named
+            // values (ACEXCEL_UPDATEOPTIONS...); records without them end here.
             let mut custom_data = Vec::new();
             for _ in 0..count(reader.read_bit_long(), reader) {
                 custom_data.push(DataLinkCustomData {
                     target: Handle::from(reader.read_handle()),
-                    value: reader.read_variable_text(),
+                    value: String::new(),
                 });
+            }
+            let hard_owner = Handle::from(reader.read_handle());
+            let mut named_values = Vec::new();
+            if reader.main_remaining_bits() > 0 {
+                for _ in 0..count(reader.read_bit_long(), reader) {
+                    named_values.push(super::entities::read_custom_table_data(reader, version));
+                }
             }
             ClassObjectData::DataLink(DataLink {
                 data_adapter,
@@ -973,7 +983,8 @@ pub fn read_class_object_data(
                 status_flags,
                 update_status,
                 custom_data,
-                hard_owner: Handle::from(reader.read_handle()),
+                hard_owner,
+                named_values,
             })
         }
         "ACDBPERSSUBENTMANAGER" | "PERSUBENTMGR" => {

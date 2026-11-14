@@ -148,7 +148,7 @@ fn encode_record(record: &ProxyGraphicRecord) -> Option<(u32, Vec<u8>)> {
                 data.extend_from_slice(&value.to_le_bytes());
             }
             data.extend_from_slice(&0u16.to_le_bytes());
-            while (RECORD_HEADER_SIZE + data.len()) % 4 != 0 {
+            while !(RECORD_HEADER_SIZE + data.len()).is_multiple_of(4) {
                 data.push(0);
             }
             Some((36, data))

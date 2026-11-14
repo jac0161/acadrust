@@ -13,8 +13,10 @@ use crate::types::{BoundingBox3D, Vector3};
 /// Constraint that is held fixed while the other helix parameters vary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub enum HelixConstraint {
     /// Turn height is held constant (DXF 280 = 0).
+    #[default]
     TurnHeight,
     /// Number of turns is held constant (DXF 280 = 1).
     Turns,
@@ -42,11 +44,6 @@ impl HelixConstraint {
     }
 }
 
-impl Default for HelixConstraint {
-    fn default() -> Self {
-        HelixConstraint::TurnHeight
-    }
-}
 
 /// A helix entity (AcDbHelix): a spline curve plus its generating parameters.
 #[derive(Debug, Clone, PartialEq)]

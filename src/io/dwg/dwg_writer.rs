@@ -71,6 +71,7 @@ impl DwgWriter {
         let mut prepared = crate::io::loft_parameters::prepared(document);
         prepare_drop_version_unsupported_entities(&mut prepared);
         prepare_mleader_style_version_eed(&mut prepared);
+        prepare_optional_app_ids(&mut prepared);
         prepare_legacy_fit_splines(&mut prepared);
         prepare_nurb_surfaces(&mut prepared, document.version);
         prepare_surface_classes(&mut prepared);
@@ -118,6 +119,7 @@ impl DwgWriter {
             if owned.version < DxfVersion::AC1027 {
                 prepare_legacy_document(&mut owned);
                 crate::objects::store_table_style_roundtrip(&mut owned);
+                crate::objects::store_material_roundtrip(&mut owned);
                 crate::objects::store_visual_style_roundtrip(&mut owned);
             }
             &owned
@@ -166,6 +168,7 @@ impl DwgWriter {
         let mut prepared = crate::io::loft_parameters::prepared(document);
         prepare_drop_version_unsupported_entities(&mut prepared);
         prepare_mleader_style_version_eed(&mut prepared);
+        prepare_optional_app_ids(&mut prepared);
         prepare_legacy_fit_splines(&mut prepared);
         prepare_nurb_surfaces(&mut prepared, document.version);
         prepare_surface_classes(&mut prepared);
@@ -430,6 +433,31 @@ fn restore_downsaved_nurb_surfaces(document: &mut std::borrow::Cow<'_, CadDocume
     }
 }
 
+/// lince (HND-02): a drawing read from a file without them has no AcadAnnotative, AcCmTransparency or
+/// AcAecLayerStandard application id; add the one that something needs, or the annotative marks, the layer
+/// transparency or the layer description are not written.
+pub(crate) fn prepare_optional_app_ids(document: &mut std::borrow::Cow<'_, CadDocument>) {
+    let annotative = |x: &crate::xdata::ExtendedData| x.get_record("AcadAnnotative").is_some();
+    let needs = |d: &CadDocument, app: &str| match app {
+        "AcadAnnotative" => {
+            d.text_styles.iter().any(|s| s.annotative)
+                || d.dim_styles.iter().any(|s| s.annotative)
+                || d.entities().any(|e| annotative(&e.common().extended_data))
+                || d.object_xdata.values().any(annotative)
+        }
+        "AcCmTransparency" => d.layers.iter().any(|l| !l.transparency.is_opaque()),
+        _ => d.layers.iter().any(|l| !l.description.is_empty()),
+    };
+    for app in ["AcadAnnotative", "AcCmTransparency", crate::tables::layer::LAYER_DESCRIPTION_APP] {
+        if !document.app_ids.contains(app) && needs(document, app) {
+            let document = document.to_mut();
+            let mut a = crate::tables::AppId::new(app);
+            a.handle = document.allocate_handle();
+            let _ = document.app_ids.add(a);
+        }
+    }
+}
+
 /// MLEADERSTYLE (AutoCAD 2008, AC1021) has no version field before R2010, so
 /// AutoCAD tags it with `ACAD_MLEADERVER` EED (1070 = 2) when saving to
 /// R2000/R2004. The ODA engine (progeCAD, BricsCAD...) rejects a pre-R2007
@@ -621,15 +649,14 @@ fn validate_unknown_records(document: &CadDocument) -> Result<()> {
                 let supported = table
                     .fields
                     .iter()
-                    .all(|field| match (field.code, &field.value) {
+                    .all(|field| matches!((field.code, &field.value),
                         (90..=99, crate::objects::BlockPropertiesTableValue::Integer(_))
                         | (170..=179, crate::objects::BlockPropertiesTableValue::Integer(_))
                         | (290..=299, crate::objects::BlockPropertiesTableValue::Boolean(_))
                         | (140..=149, crate::objects::BlockPropertiesTableValue::Real(_))
                         | (300..=309, crate::objects::BlockPropertiesTableValue::Text(_))
-                        | (340..=349, crate::objects::BlockPropertiesTableValue::Handle(_)) => true,
-                        _ => false,
-                    });
+                        | (340..=349, crate::objects::BlockPropertiesTableValue::Handle(_))
+                    ));
                 if !supported {
                     return Err(DxfError::NotImplemented(format!(
                         "Cannot encode Block Properties Table at handle {} as DWG: a field uses an unsupported value type",
@@ -1411,7 +1438,7 @@ fn scale_from_proxy(proxy: &crate::objects::ProxyObject) -> Option<crate::object
         (paper_units, drawing_units, is_unit_scale) = (main.read_bit_double(), main.read_bit_double(), main.read_bit());
     }
     let valid = paper_units.is_finite() && drawing_units.is_finite() && paper_units > 0.0 && drawing_units > 0.0;
-    (valid && !name.is_empty() && main.position_in_bits() as u32 <= proxy.payload.bit_count).then(|| crate::objects::Scale {
+    (valid && !name.is_empty() && main.position_in_bits() as u32 <= proxy.payload.bit_count).then_some(crate::objects::Scale {
         handle: proxy.handle,
         owner_handle: proxy.owner,
         name,
@@ -2445,7 +2472,7 @@ fn write_ac18<W: Write + Seek>(
     // it). `add_section` aligns via `write_magic_number` (pads by `pos % 0x20`)
     // then writes a 0x20 page header; the header's preview seeker points at
     // `page + 0x20`, which is where the container lands.
-    let cur = output.seek(std::io::SeekFrom::Current(0))? as u64;
+    let cur = output.stream_position()?;
     let preview_base = (cur + cur % 0x20) + 0x20;
     let preview_data =
         crate::io::dwg::preview::build_preview(document.preview.as_ref(), preview_base);
@@ -2615,7 +2642,7 @@ fn write_ac21_impl<W: Write + Seek>(
     // AC21 encoding=1 stores contiguous data followed by RS parity. The preview
     // stays in one page, so its image offsets address the data at this position.
     // Compute them before encoding, since the page CRC covers the final bytes.
-    let preview_base = output.seek(std::io::SeekFrom::Current(0))? as u64;
+    let preview_base = output.stream_position()?;
     let preview_data =
         crate::io::dwg::preview::build_preview(document.preview.as_ref(), preview_base);
     fhw.add_section(output, section_names::PREVIEW, &preview_data)?;
@@ -3059,7 +3086,7 @@ fn build_acds_data2_segment(entries: &[(Handle, Vec<u8>)]) -> Vec<u8> {
     }
 
     // Padding with 0x70 to 16-byte alignment
-    seg.extend(std::iter::repeat(0x70u8).take(padding));
+    seg.extend(std::iter::repeat_n(0x70u8, padding));
 
     debug_assert_eq!(seg.len(), seg_size);
     seg
@@ -3647,7 +3674,7 @@ mod tests {
 
     #[test]
     fn light_dropped_when_saving_to_pre_2007_dwg() {
-        use crate::entities::{EntityType, Light};
+        use crate::entities::EntityType;
         use crate::DwgReader;
         use std::io::Cursor;
         let count_lights = |doc: &CadDocument| {
@@ -3664,7 +3691,7 @@ mod tests {
         ] {
             let mut doc = CadDocument::new();
             doc.version = version;
-            doc.add_entity(EntityType::Light(Box::new(Light::new())))
+            doc.add_entity(EntityType::Light(Box::default()))
                 .unwrap();
             let bytes = DwgWriter::write_to_vec(&doc).unwrap();
             // A file AutoCAD rejected (ErrorStatus 53) would not round-trip here.
@@ -3722,6 +3749,168 @@ mod tests {
             .iter()
             .map(|class| class.dxf_name.to_ascii_uppercase())
             .collect()
+    }
+
+    /// lince (DWG-03): a DATALINK's custom data are handles only; an Excel
+    /// link's named values (ACEXCEL_*) follow them. Both survive R2007 (text
+    /// stream apart) and R2018 (text inline) saves.
+    #[test]
+    fn data_link_custom_data_and_named_values_round_trip() {
+        use crate::entities::table::{CellValue, TableCustomData};
+        use crate::objects::{ClassObject, ClassObjectData, DataLink, DataLinkCustomData, ObjectType};
+
+        for named in [false, true] {
+            // DWG-04: also R2010/R2013 (Data Links saved there by lince opens in AutoCAD, AUDIT 0).
+            for version in [DxfVersion::AC1021, DxfVersion::AC1024, DxfVersion::AC1027, DxfVersion::AC1032] {
+                let mut document = CadDocument::new();
+                document.version = version;
+                let target = document.header.model_space_block_handle;
+                let mut link = DataLink {
+                    data_adapter: "AcSmTocDataAdapter".into(),
+                    connection_string: "SheetSet?Drawing?Layout".into(),
+                    custom_data: vec![DataLinkCustomData { target, value: String::new() }; 2],
+                    ..DataLink::default()
+                };
+                if named {
+                    link.named_values = vec![
+                        TableCustomData { name: "ACEXCEL_UPDATEOPTIONS".into(), value: CellValue::integer(1_835_009) },
+                        TableCustomData { name: "ACEXCEL_CONNECTION_STRING".into(), value: CellValue::text("a.xls!Sheet1") },
+                    ];
+                }
+                let mut object = ClassObject::new(ClassObjectData::DataLink(link));
+                object.handle = document.allocate_handle();
+                let handle = object.handle;
+                document.objects.insert(handle, ObjectType::ClassObject(Box::new(object)));
+
+                let bytes = DwgWriter::write_to_vec(&document).unwrap();
+                let decoded = crate::io::dwg::DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+                let Some(ObjectType::ClassObject(object)) = decoded.objects.get(&handle) else {
+                    panic!("{version:?}: DATALINK lost");
+                };
+                let ClassObjectData::DataLink(read) = &object.data else { panic!("{version:?}: not a DATALINK") };
+                assert_eq!(read.connection_string, "SheetSet?Drawing?Layout", "{version:?}");
+                assert_eq!(read.custom_data.iter().map(|d| d.target).collect::<Vec<_>>(), vec![target; 2], "{version:?}");
+                let values: Vec<_> = read.named_values.iter().map(|d| (d.name.as_str(), d.value.numeric_value, d.value.text.as_str())).collect();
+                let expected = if named {
+                    vec![("ACEXCEL_UPDATEOPTIONS", 1_835_009.0, ""), ("ACEXCEL_CONNECTION_STRING", 0.0, "a.xls!Sheet1")]
+                } else {
+                    Vec::new()
+                };
+                assert_eq!(values, expected, "{version:?}");
+            }
+        }
+    }
+
+    /// lince (DWG-05): a column of a block properties table stores its default
+    /// value after its type (`170 1` + `300 Custom`). Read as two flags, the
+    /// texts after it went off by one and AutoCAD rejected the DWG 2000/2004
+    /// copy of `Mechanical - Metric` (ErrorStatus=53).
+    #[test]
+    fn block_properties_table_column_default_round_trips() {
+        use crate::objects::{BlockPropertiesTable, BlockPropertiesTableField as F, BlockPropertiesTableValue as V, DynamicBlockData, DynamicBlockObject, ObjectType};
+        let i = |code, v: i64| F { code, value: V::Integer(v) };
+        let t = |code, v: &str| F { code, value: V::Text(v.into()) };
+        let b = |code, v| F { code, value: V::Boolean(v) };
+        let h = |code| F { code, value: V::Handle(Handle::NULL) };
+        // One column defaulting to "Custom", one without default, one row.
+        let mut fields = vec![i(90, 2), t(300, "Tabla"), t(301, ""), i(91, 2)];
+        for (default, name) in [(Some("Custom"), "UserVariable"), (None, "UpdatedDistance")] {
+            fields.extend([h(340), i(170, 0), i(171, -1), t(300, ""), t(301, name), i(90, 30), i(170, -9999), i(170, if default.is_some() { 1 } else { -9999 })]);
+            fields.extend(default.map(|d| t(300, d)));
+            fields.extend([b(290, false), b(291, true), b(292, true), b(293, false), b(294, false), t(302, if default.is_some() { "" } else { "Final" }), h(340)]);
+        }
+        fields.extend([i(92, 1), i(90, 0), i(170, 1), t(300, "M3"), i(170, 40), F { code: 140, value: V::Real(6.4) }, i(93, 8), b(290, false), b(291, true), b(292, false)]);
+        for version in [DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1032] {
+            let mut document = CadDocument::new();
+            document.version = version;
+            let mut object = DynamicBlockObject::new("BLOCKPROPERTIESTABLE", "AcDbBlockPropertiesTable");
+            object.handle = document.allocate_handle();
+            object.owner = document.header.named_objects_dict_handle;
+            object.data = DynamicBlockData::PropertiesTable(BlockPropertiesTable { fields: fields.clone(), ..Default::default() });
+            let handle = object.handle;
+            document.objects.insert(handle, ObjectType::DynamicBlock(Box::new(object)));
+            let bytes = DwgWriter::write_to_vec(&document).unwrap();
+            let decoded = crate::io::dwg::DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+            let Some(ObjectType::DynamicBlock(read)) = decoded.objects.get(&handle) else { panic!("{version:?}: table lost") };
+            let DynamicBlockData::PropertiesTable(read) = &read.data else { panic!("{version:?}: not a table") };
+            assert_eq!(read.fields, fields, "{version:?}");
+        }
+    }
+
+    /// lince (DWG-05): in the pre-R2010 cell record the visibility of an edge has
+    /// its own bit (0x20000 for the left one), four above its line weight's.
+    /// Gated by the weight bit, a cell of `Mechanical - Text and Tables` saved
+    /// by AutoCAD (left colour + weight + visibility) or with a colour and the
+    /// visibility only did not open once written to DWG 2000/2004.
+    #[test]
+    fn legacy_cell_edge_visibility_has_its_own_bit() {
+        use crate::entities::table::{CellStyle, Table};
+        use crate::entities::EntityType;
+        use crate::types::{Color, Vector3};
+        for (flags, written) in [(0x200 | 0x20000, 0x200 | 0x20000), (0x200 | 0x2000 | 0x20000 | 0x40000, 0x200 | 0x2000 | 0x20000 | 0x40000), (0x400, 0x400 | 0x4000)] {
+            for version in [DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1021] {
+                let mut document = CadDocument::new();
+                document.version = version;
+                let mut table = Table::new(Vector3::ZERO, 1, 1);
+                let mut style = CellStyle::new();
+                style.override_flags = flags;
+                style.legacy_override_bits = true;
+                style.left_border.color = Color::Index(3);
+                style.left_border.invisible = true;
+                style.left_border.line_weight = crate::types::LineWeight::Value(50);
+                style.top_border.line_weight = crate::types::LineWeight::Value(35);
+                table.cell_mut(0, 0).unwrap().style = Some(style);
+                let handle = document.add_entity(EntityType::Table(Box::new(table))).unwrap();
+                let bytes = DwgWriter::write_to_vec(&document).unwrap();
+                let decoded = crate::io::dwg::DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+                let Some(EntityType::Table(read)) = decoded.get_entity(handle) else { panic!("{version:?}: table lost") };
+                let style = read.cell(0, 0).unwrap().style.as_ref().unwrap();
+                assert_eq!(style.override_flags, written, "{flags:#X} {version:?}");
+                assert!(flags & 0x200 == 0 || style.left_border.color == Color::Index(3), "{flags:#X} {version:?}");
+                assert_eq!(style.left_border.invisible, flags & 0x20000 != 0, "{flags:#X} {version:?}");
+                assert!(flags & 0x400 == 0 || style.top_border.line_weight == crate::types::LineWeight::Value(35), "{flags:#X} {version:?}");
+            }
+        }
+    }
+
+    /// lince (DWG-04): the 0x0002 flag (header suppressed) of a pre-R2010 table
+    /// style override has no bit, also in R2000/R2004; the field after it reads
+    /// back aligned (Data Links / Text and Tables saved there, AUDIT 0).
+    #[test]
+    fn legacy_style_override_header_flag_has_no_bit() {
+        use crate::entities::table::{LegacyTableStyleOverride, Table};
+        use crate::entities::EntityType;
+        use crate::types::Vector3;
+        for version in [DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1021] {
+            let mut document = CadDocument::new();
+            document.version = version;
+            let mut table = Table::new(Vector3::ZERO, 1, 1);
+            table.legacy_style_override = Some(LegacyTableStyleOverride { flags: 0x0002 | 0x0004, flow_direction: Some(1), ..Default::default() });
+            let handle = document.add_entity(EntityType::Table(Box::new(table))).unwrap();
+            let bytes = DwgWriter::write_to_vec(&document).unwrap();
+            let decoded = crate::io::dwg::DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+            let Some(EntityType::Table(read)) = decoded.get_entity(handle) else { panic!("{version:?}: table lost") };
+            let o = read.legacy_style_override.as_ref().expect("override lost");
+            assert_eq!((o.flags, o.flow_direction), (0x0006, Some(1)), "{version:?}");
+        }
+    }
+
+    /// lince (DWG-06): `Building Section.dwg` carries an unnamed shape style that
+    /// is xref-dependent (70 = 17) with no xref block. Read back as independent,
+    /// AutoCAD listed it as "SHAPE|REF" and AUDIT gave 2 errors on every copy.
+    #[test]
+    fn xref_dependent_shape_style_without_xref_block_survives() {
+        for version in [DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1021, DxfVersion::AC1032] {
+            let mut document = CadDocument::new();
+            document.version = version;
+            let mut style = crate::tables::TextStyle::new("");
+            (style.font_file, style.is_shape_file, style.xref_dependent) = ("ltypeshp.shx".into(), true, true);
+            document.text_styles.add_allow_duplicate(style);
+            let bytes = DwgWriter::write_to_vec(&document).unwrap();
+            let decoded = crate::io::dwg::DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+            let read = decoded.text_styles.iter().find(|s| s.font_file == "ltypeshp.shx").expect("shape style lost");
+            assert!(read.is_shape_file && read.xref_dependent, "{version:?}");
+        }
     }
 
     fn layer_filter_document() -> CadDocument {
@@ -4845,7 +5034,7 @@ mod tests {
     }
 
     fn constraint_group_of(document: &CadDocument) -> &crate::objects::Assoc2dConstraintGroup {
-        use crate::objects::{AssociativeData, AssociativeObject, ObjectType};
+        use crate::objects::{AssociativeData, ObjectType};
         document
             .objects
             .values()

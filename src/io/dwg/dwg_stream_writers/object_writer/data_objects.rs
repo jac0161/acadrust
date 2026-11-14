@@ -45,7 +45,7 @@ impl<'a> DwgObjectWriter<'a> {
             handles.reset();
             if owner.value() < object.handle.value() {
                 let delta = object.handle.value() - owner.value();
-                let count = ((64 - delta.leading_zeros() + 7) / 8) as u8;
+                let count = (64 - delta.leading_zeros()).div_ceil(8) as u8;
                 handles.write_byte(0xC0 | count);
                 let bytes = delta.to_be_bytes();
                 handles.write_bytes(&bytes[8 - count as usize..]);

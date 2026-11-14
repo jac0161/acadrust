@@ -187,7 +187,7 @@ impl DocumentDelta {
                 app_ids: |_| 0, views: |_| 0, vports: |_| 0, ucss: |_| 0, vx_table: |_| 0
         );
         let (a, b): (Vec<&Arc<EntityType>>, Vec<&Arc<EntityType>>) = (from.entities.iter().collect(), to.entities.iter().collect());
-        let entities = Positions::new(&a, &b, |x, y| Arc::ptr_eq(x, y), |x| Arc::clone(x));
+        let entities = Positions::new(&a, &b, Arc::ptr_eq, Arc::clone);
         // The `from` versions no longer in `to` live on only here (an entity that just moved position is shared).
         let moved: std::collections::HashSet<*const EntityType> =
             entities.items.iter().filter_map(|(i, _)| to.entities.get(*i)).map(Arc::as_ptr).collect();

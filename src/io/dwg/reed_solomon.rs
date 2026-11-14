@@ -120,7 +120,7 @@ fn rs_generator_poly(nsym: usize, fcr: usize, gf: &GfTables) -> Vec<u8> {
         let alpha_i = gf.exp[(fcr + i) % RS_N];
         // Multiply in-place, processing from high degree down.
         for j in (1..=i + 1).rev() {
-            gen[j] = gen[j] ^ gf.mul(gen[j - 1], alpha_i);
+            gen[j] ^= gf.mul(gen[j - 1], alpha_i);
         }
         // gen[0] stays 1 (monic).
     }
@@ -206,7 +206,7 @@ fn rs_encode_block(data: &[u8], nsym: usize, gen: &[u8], gf: &GfTables) -> [u8; 
 /// * `factor`     — number of interleaved sub-streams
 /// * `block_size` — RS data size k (239 for system pages, 251 for data pages)
 /// * `prim_poly`  — GF(2^8) primitive polynomial (use [`RS_SYSTEM_PRIM_POLY`]
-///                  or [`RS_DATA_PRIM_POLY`])
+///   or [`RS_DATA_PRIM_POLY`])
 ///
 /// # Panics
 ///
@@ -281,6 +281,7 @@ pub fn reed_solomon_decode(encoded: &[u8], buffer: &mut [u8], factor: usize, blo
     let mut n = 0;
     let mut length = buffer.len();
 
+    #[allow(clippy::explicit_counter_loop)] // bucle de bytes heredado; se deja tal cual
     for _i in 0..factor {
         let mut cindex = n;
         if n < encoded.len() {
@@ -325,7 +326,7 @@ pub fn reed_solomon_encode_compact(data: &[u8], block_size: usize) -> Vec<u8> {
     let n_blocks = if data.is_empty() {
         0
     } else {
-        (data.len() + block_size - 1) / block_size
+        data.len().div_ceil(block_size)
     };
 
     let mut result = Vec::with_capacity(data.len() + n_blocks * nsym);
@@ -596,7 +597,7 @@ mod tests {
         // Data shorter than factor * block_size — last sub-stream is zero-padded.
         // factor=3, block_size=239, but only 500 bytes of data.
         let data: Vec<u8> = (0..500).map(|i| (i & 0xFF) as u8).collect();
-        let factor = (data.len() + RS_SYSTEM_K - 1) / RS_SYSTEM_K; // 3
+        let factor = data.len().div_ceil(RS_SYSTEM_K); // 3
         assert_eq!(factor, 3);
 
         let mut encoded = vec![0u8; factor * RS_N];

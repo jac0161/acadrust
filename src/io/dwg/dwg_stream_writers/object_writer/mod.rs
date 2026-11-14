@@ -604,15 +604,14 @@ impl<'a> DwgObjectWriter<'a> {
 
         for (handle, obj) in &self.document.objects {
             if let crate::objects::ObjectType::Dictionary(dict) = obj {
-                if dict.owner.is_null() {
-                    if dict.entries.len() > best_entry_count
+                if dict.owner.is_null()
+                    && (dict.entries.len() > best_entry_count
                         || (dict.entries.len() == best_entry_count
-                            && handle.value() > best_handle.value())
+                            && handle.value() > best_handle.value()))
                     {
                         best_handle = *handle;
                         best_entry_count = dict.entries.len();
                     }
-                }
             }
         }
 
@@ -844,7 +843,7 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_layer_entries(&mut self) {
-        let entries: Vec<_> = self.document.layers.iter().map(|l| l.clone()).collect();
+        let entries: Vec<_> = self.document.layers.iter().cloned().collect();
         for layer in &entries {
             self.write_layer(layer);
         }
@@ -1008,8 +1007,7 @@ impl<'a> DwgObjectWriter<'a> {
         let entries: Vec<_> = self
             .document
             .text_styles
-            .iter()
-            .map(|s| s.clone())
+            .iter().cloned()
             .collect();
         for style in &entries {
             self.write_text_style(style);
@@ -1084,8 +1082,7 @@ impl<'a> DwgObjectWriter<'a> {
         let entries: Vec<_> = self
             .document
             .line_types
-            .iter()
-            .map(|lt| lt.clone())
+            .iter().cloned()
             .collect();
         for lt in &entries {
             self.write_line_type(lt);
@@ -1135,7 +1132,7 @@ impl<'a> DwgObjectWriter<'a> {
 
         for seg in &ltype.elements {
             let c = seg.complex.as_ref();
-            let flags = if let Some(ref cx) = c {
+            let flags = if let Some(cx) = c {
                 let mut f: i16 = cx.source_flags as i16;
                 f &= !(0x01 | 0x02 | 0x04 | 0x08);
                 if cx.is_absolute_rotation() {
@@ -1219,7 +1216,7 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_view_entries(&mut self) {
-        let entries: Vec<_> = self.document.views.iter().map(|v| v.clone()).collect();
+        let entries: Vec<_> = self.document.views.iter().cloned().collect();
         for view in &entries {
             self.write_view(view);
         }
@@ -1319,7 +1316,7 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_ucs_entries(&mut self) {
-        let entries: Vec<_> = self.document.ucss.iter().map(|u| u.clone()).collect();
+        let entries: Vec<_> = self.document.ucss.iter().cloned().collect();
         for ucs in &entries {
             self.write_ucs(ucs);
         }
@@ -1535,7 +1532,7 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_appid_entries(&mut self) {
-        let mut entries: Vec<_> = self.document.app_ids.iter().map(|a| a.clone()).collect();
+        let mut entries: Vec<_> = self.document.app_ids.iter().cloned().collect();
         entries.sort_by_key(|app| !app.name.eq_ignore_ascii_case("ACAD"));
         for app in &entries {
             self.write_appid(app);
@@ -1587,7 +1584,7 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_dimstyle_entries(&mut self) {
-        let entries: Vec<_> = self.document.dim_styles.iter().map(|d| d.clone()).collect();
+        let entries: Vec<_> = self.document.dim_styles.iter().cloned().collect();
         for ds in &entries {
             self.write_dimstyle(ds);
         }
@@ -1964,8 +1961,7 @@ impl<'a> DwgObjectWriter<'a> {
         let block_records: Vec<BlockRecord> = self
             .document
             .block_records
-            .iter()
-            .map(|br| br.clone())
+            .iter().cloned()
             .collect();
 
         for br in &block_records {
@@ -2055,7 +2051,7 @@ impl<'a> DwgObjectWriter<'a> {
                         if safe_to_batch {
                             let worker_count = worker_count();
                             let chunk_size =
-                                ((run.len() + worker_count * 4 - 1) / (worker_count * 4)).max(512);
+                                run.len().div_ceil(worker_count * 4).max(512);
                             // lince (paralelo): los lotes con polilíneas o atributos asignan handles a sus
                             // vértices y SEQEND. Todos empiezan a contar en `inicio`; los que asignan y no son
                             // los primeros en hacerlo se repiten con su comienzo real (cuántos asigna una

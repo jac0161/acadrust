@@ -200,11 +200,10 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                         continue;
                     }
                 }
-                ObjectType::DynamicBlock(dynamic) => {
-                    if is_unrestorable_assoc_object(&dynamic.dxf_name) {
+                ObjectType::DynamicBlock(dynamic)
+                    if is_unrestorable_assoc_object(&dynamic.dxf_name) => {
                         continue;
                     }
-                }
                 _ => {}
             }
             set.insert(*h);
@@ -4651,8 +4650,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         let text: &str = if value.contains('\n') || value.contains('\r') {
             sanitized = value
                 .replace("\r\n", "\\P")
-                .replace('\r', "\\P")
-                .replace('\n', "\\P");
+                .replace(['\r', '\n'], "\\P");
             &sanitized
         } else {
             value
@@ -6180,7 +6178,6 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
             if *handle == root_handle {
                 continue;
             }
-            let object = object;
             match object {
                 ObjectType::Dictionary(dict) => self.write_dictionary(dict, document)?,
                 ObjectType::Layout(layout) => self.write_layout(layout)?,
@@ -7663,14 +7660,13 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         let mut best_count = 0usize;
         for (handle, obj) in objects {
             if let ObjectType::Dictionary(dict) = obj {
-                if dict.owner.is_null() {
-                    if dict.entries.len() > best_count
-                        || (dict.entries.len() == best_count && handle.value() > best.value())
+                if dict.owner.is_null()
+                    && (dict.entries.len() > best_count
+                        || (dict.entries.len() == best_count && handle.value() > best.value()))
                     {
                         best = *handle;
                         best_count = dict.entries.len();
                     }
-                }
             }
         }
         best
@@ -8990,7 +8986,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                 self.writer.write_bool(code.unwrap_or(290), *value)?;
             }
             VisualStylePropertyValue::Color(value) => {
-                self.writer.write_color(code.unwrap_or(62), value.clone())?;
+                self.writer.write_color(code.unwrap_or(62), *value)?;
                 if let Some(true_color) = value.to_true_color_value() {
                     self.writer.write_i32(420, true_color)?;
                 }
@@ -9104,7 +9100,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
                     self.writer.write_double(469, *item)?;
                 }
                 Some(MaterialProceduralValue::Color(item)) => {
-                    self.writer.write_color(62, item.clone())?;
+                    self.writer.write_color(62, *item)?;
                     if let Some(true_color) = item.to_true_color_value() {
                         self.writer.write_i32(420, true_color)?;
                     }
@@ -11240,7 +11236,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_string(300, &cell.tooltip)?;
         self.writer.write_i32(91, cell.custom_data)?;
         self.write_table_custom_data_dxf(&cell.custom_data_items)?;
-        self.writer.write_i32(92, cell.has_linked_data as i32)?;
+        self.writer.write_i32(92, cell.linked_data_code())?;
         if cell.has_linked_data {
             self.writer
                 .write_handle(340, cell.data_link_handle.unwrap_or(Handle::NULL))?;
@@ -11549,7 +11545,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         for bit in 0..18 {
             if flags.2 & (1 << bit) != 0 {
                 self.writer.write_i16(
-                    274 + (bit % 6) as i32,
+                    274 + (bit % 6),
                     weights
                         .values
                         .get(index)
@@ -11570,7 +11566,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         for bit in 0..18 {
             if flags.3 & (1 << bit) != 0 {
                 self.writer.write_bool(
-                    284 + (bit % 6) as i32,
+                    284 + (bit % 6),
                     visibility.values.get(index).copied().unwrap_or(true),
                 )?;
                 index += 1;

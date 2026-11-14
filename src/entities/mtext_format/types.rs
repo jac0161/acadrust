@@ -24,8 +24,10 @@ use std::fmt::Write;
 /// valid in MTEXT. MTEXT uses `\L`/`\l`, `\O`/`\o`, `\K`/`\k` instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub enum SpecialChar {
     /// Degree symbol (°) — `%%d`
+    #[default]
     Degree,
     /// Plus-minus symbol (±) — `%%p`
     PlusMinus,
@@ -68,11 +70,6 @@ impl SpecialChar {
     }
 }
 
-impl Default for SpecialChar {
-    fn default() -> Self {
-        SpecialChar::Degree
-    }
-}
 
 // ============================================================================
 // Stroke Flags (Underline, Overline, Strikethrough)
@@ -359,8 +356,10 @@ impl core::fmt::Display for TabStop {
 /// Represents an ACAD Color Index (ACI) color, true-color RGB, or ByLayer/ByBlock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub enum MTextColor {
     /// No color specified (inherits from entity or parent)
+    #[default]
     None,
     /// ACAD Color Index (1–255)
     Index(u16),
@@ -372,11 +371,6 @@ pub enum MTextColor {
     ByBlock,
 }
 
-impl Default for MTextColor {
-    fn default() -> Self {
-        MTextColor::None
-    }
-}
 
 impl MTextColor {
     /// Create from an ACI index (0–256).
@@ -856,7 +850,7 @@ pub struct MTextDocument {
 fn para_has_props(p: &ParagraphProperties) -> bool {
     p.alignment
         .as_ref()
-        .map_or(false, |a| !matches!(a, MTextParagraphAlignment::Default))
+        .is_some_and(|a| !matches!(a, MTextParagraphAlignment::Default))
         || p.first_line_indent.is_some()
         || p.left_margin.is_some()
         || p.right_margin.is_some()

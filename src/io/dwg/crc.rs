@@ -1011,7 +1011,7 @@ pub fn reorder_for_crc(data: &[u8]) -> Vec<u8> {
         result.push(data[base + 5]);
         result.push(data[base + 2]);
         result.push(data[base + 3]);
-        result.push(data[base + 0]);
+        result.push(data[base]);
         result.push(data[base + 1]);
     }
 
@@ -1048,14 +1048,14 @@ pub fn reorder_for_crc(data: &[u8]) -> Vec<u8> {
             // 2[2], 2[0] → [2,3,0,1]
             result.push(data[base + 2]);
             result.push(data[base + 3]);
-            result.push(data[base + 0]);
+            result.push(data[base]);
             result.push(data[base + 1]);
         }
         5 => {
             // 4[0], 1[4] → [2,3,0,1,4]
             result.push(data[base + 2]);
             result.push(data[base + 3]);
-            result.push(data[base + 0]);
+            result.push(data[base]);
             result.push(data[base + 1]);
             result.push(data[base + 4]);
         }
@@ -1063,7 +1063,7 @@ pub fn reorder_for_crc(data: &[u8]) -> Vec<u8> {
             // 4[0], 2[4] → [2,3,0,1,4,5]
             result.push(data[base + 2]);
             result.push(data[base + 3]);
-            result.push(data[base + 0]);
+            result.push(data[base]);
             result.push(data[base + 1]);
             result.push(data[base + 4]);
             result.push(data[base + 5]);
@@ -1072,7 +1072,7 @@ pub fn reorder_for_crc(data: &[u8]) -> Vec<u8> {
             // 4[0], 3[4] → [2,3,0,1,4,5,6]
             result.push(data[base + 2]);
             result.push(data[base + 3]);
-            result.push(data[base + 0]);
+            result.push(data[base]);
             result.push(data[base + 1]);
             result.push(data[base + 4]);
             result.push(data[base + 5]);

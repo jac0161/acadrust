@@ -3441,7 +3441,7 @@ impl<'a> SectionReader<'a> {
             if let Some(p) = self.reader.read_pair()? {
                 let base = p.code % 100;
                 // Coordinate codes are 10–39 (X=1x, Y=2x, Z=3x); anything else belongs to the next token
-                if base >= 10 && base < 40 {
+                if (10..40).contains(&base) {
                     if let Some(v) = p.as_double() {
                         if base < 20 {
                             target.x = v;
@@ -6381,6 +6381,7 @@ impl<'a> SectionReader<'a> {
                     update_status,
                     custom_data,
                     hard_owner: fields.handle(section, 360),
+                    named_values: Vec::new(),
                 })
             }
             "ACDBPERSSUBENTMANAGER" | "PERSUBENTMGR" => {
@@ -7349,14 +7350,13 @@ impl<'a> SectionReader<'a> {
             let mut best_count = 0usize;
             for (handle, object) in &document.objects {
                 if let crate::objects::ObjectType::Dictionary(dict) = object {
-                    if dict.owner.is_null() {
-                        if dict.entries.len() > best_count
-                            || (dict.entries.len() == best_count && handle.value() > best.value())
+                    if dict.owner.is_null()
+                        && (dict.entries.len() > best_count
+                            || (dict.entries.len() == best_count && handle.value() > best.value()))
                         {
                             best = *handle;
                             best_count = dict.entries.len();
                         }
-                    }
                 }
             }
             if !best.is_null() {
@@ -7540,14 +7540,13 @@ impl<'a> SectionReader<'a> {
                                 layout.handle = Handle::new(h);
                             }
                         }
-                        330 => {
-                            if !owner_set {
+                        330
+                            if !owner_set => {
                                 if let Ok(h) = u64::from_str_radix(&pair.value_string, 16) {
                                     layout.owner = Handle::new(h);
                                 }
                                 owner_set = true;
                             }
-                        }
                         _ => {}
                     }
                 }
@@ -7940,7 +7939,7 @@ impl<'a> SectionReader<'a> {
             }
             if extended_seen && property_count.is_none() {
                 match pair.code {
-                    40 | 41 | 42 | 43 | 44 => {
+                    40..=44 => {
                         pending_property = Some(VisualStylePropertyValue::Double(
                             pair.as_double().unwrap_or_default(),
                         ));
@@ -8703,7 +8702,7 @@ impl<'a> SectionReader<'a> {
             "LONG_TRANSACTION" => DataObjectData::LongTransaction,
             "OBJECT_PTR" => DataObjectData::ObjectPointer,
             "PARTIAL_VIEWING_FILTER" => {
-                DataObjectData::PartialViewingFilter(PartialViewingFilter::default())
+                DataObjectData::PartialViewingFilter(PartialViewingFilter)
             }
             "TABLEGEOMETRY" => DataObjectData::TableGeometry(TableGeometry::default()),
             _ => DataObjectData::BreakPointRef,
@@ -9198,7 +9197,7 @@ impl<'a> SectionReader<'a> {
                     }
                     _ => {}
                 },
-                43 | 44 | 45 | 46 => {
+                43..=46 => {
                     if let DataObjectData::TableGeometry(value) = &mut obj.data {
                         if let Some(geometry) = value
                             .cells
@@ -9690,11 +9689,10 @@ impl<'a> SectionReader<'a> {
                         .min(20_000)
                 }
                 290 => value.unknown = pair.value_string.trim().parse::<i32>().unwrap_or(0) != 0,
-                330 => {
-                    if value.fields.len() < count {
+                330
+                    if value.fields.len() < count => {
                         value.fields.push(parse_dxf_handle(&pair.value_string));
                     }
-                }
                 _ => {}
             }
         }
@@ -9718,17 +9716,14 @@ impl<'a> SectionReader<'a> {
                         handle = Handle::new(h);
                     }
                 }
-                330 => {
+                330
                     // First 330 outside a 102-group is the owner.
                     // Subsequent 330s inside reactor groups are stored as raw codes.
-                    if owner == Handle::NULL {
+                    if owner == Handle::NULL => {
                         if let Ok(h) = u64::from_str_radix(&pair.value_string, 16) {
                             owner = Handle::new(h);
                         }
-                    } else {
-                        raw_codes.push((pair.code, pair.value_string.clone()));
                     }
-                }
                 _ => {
                     raw_codes.push((pair.code, pair.value_string.clone()));
                 }
@@ -10140,7 +10135,7 @@ impl<'a> SectionReader<'a> {
                                 XDataValue::Integer16(n) => Some(*n),
                                 _ => None,
                             })
-                            .last()
+                            .next_back()
                             .is_some_and(|n| n != 0);
                     }
                     if let Some(face) = xdata.get_record("ACAD").and_then(|record| {
@@ -10196,7 +10191,7 @@ impl<'a> SectionReader<'a> {
                             .insert(block_record.handle, reactors);
                     }
                     let name = block_record.name.clone();
-                    if let Err(_) = document.block_records.add(block_record.clone()) {
+                    if document.block_records.add(block_record.clone()).is_err() {
                         // Entry already exists (from initialize_defaults),
                         // update it with the data from the file
                         if let Some(existing) = document.block_records.get_mut(&name) {
@@ -10235,7 +10230,7 @@ impl<'a> SectionReader<'a> {
         let new_paper_handle = document.header.paper_space_block_handle;
 
         if old_model_handle != new_model_handle || old_paper_handle != new_paper_handle {
-            for (_, obj) in document.objects.iter_mut() {
+            for obj in document.objects.values_mut() {
                 if let ObjectType::Layout(layout) = obj {
                     if layout.block_record == old_model_handle {
                         layout.block_record = new_model_handle;
@@ -10786,11 +10781,10 @@ impl<'a> SectionReader<'a> {
                         ds.dimlwe = v;
                     }
                 }
-                1001 => {
-                    if pair.value_string == "AcadAnnotative" {
+                1001
+                    if pair.value_string == "AcadAnnotative" => {
                         ds.annotative = self.read_annotative_xdata(pair)?;
                     }
-                }
                 _ => {}
             }
         }
@@ -17514,7 +17508,7 @@ impl<'a> SectionReader<'a> {
                         XDataValue::Integer16(n) => Some(*n),
                         _ => None,
                     })
-                    .last()
+                    .next_back()
             })
             .map(|n| n != 0)
             .unwrap_or(false);
@@ -19128,13 +19122,10 @@ impl<'a> SectionReader<'a> {
                         mesh.blend_crease = v != 0;
                     }
                 }
-                91 => match reading_state {
-                    MeshReadState::Properties => {
-                        if let Some(v) = pair.as_i32() {
-                            mesh.subdivision_level = v;
-                        }
+                91 => if reading_state == MeshReadState::Properties {
+                    if let Some(v) = pair.as_i32() {
+                        mesh.subdivision_level = v;
                     }
-                    _ => {}
                 },
                 92 => {
                     if let Some(v) = pair.as_i32() {
@@ -21800,11 +21791,10 @@ impl<'a> SectionReader<'a> {
                             Color::from_true_color_value(v);
                     }
                 }
-                1001 => {
-                    if pair.value_string == "AcadAnnotative" {
+                1001
+                    if pair.value_string == "AcadAnnotative" => {
                         ts.annotative = self.read_annotative_xdata(pair)?;
                     }
-                }
                 _ => {}
             }
         }
@@ -22032,6 +22022,51 @@ fn color_from_i32(v: i32) -> Color {
             b: (v & 0xFF) as u8,
         },
     }
+}
+
+/// The column layout in an MTEXT's ACAD extended data, between
+/// `ACAD_MTEXT_COLUMN_INFO_BEGIN` and `ACAD_MTEXT_COLUMN_INFO_END`: pairs of a
+/// group code and its value, where code 50 is followed by the height count and
+/// then that many heights.
+fn mtext_columns_from_xdata(
+    xdata: &crate::xdata::ExtendedData,
+) -> Option<crate::entities::mtext::MTextColumnData> {
+    use crate::xdata::XDataValue;
+
+    let record = xdata.records().iter().find(|r| {
+        r.application_name == "ACAD"
+            && r.values
+                .iter()
+                .any(|v| matches!(v, XDataValue::String(s) if s == "ACAD_MTEXT_COLUMN_INFO_BEGIN"))
+    })?;
+    let mut values = record
+        .values
+        .iter()
+        .skip_while(|v| !matches!(v, XDataValue::String(s) if s == "ACAD_MTEXT_COLUMN_INFO_BEGIN"))
+        .skip(1);
+    let mut columns = crate::entities::mtext::MTextColumnData::new();
+    while let Some(code) = values.next() {
+        let XDataValue::Integer16(code) = code else {
+            break; // the END marker, or something this block does not hold
+        };
+        match (code, values.next()?) {
+            (75, XDataValue::Integer16(v)) => columns.column_type = *v,
+            (79, XDataValue::Integer16(v)) => columns.auto_height = *v != 0,
+            (76, XDataValue::Integer16(v)) => columns.column_count = i32::from(*v),
+            (78, XDataValue::Integer16(v)) => columns.flow_reversed = *v != 0,
+            (48, XDataValue::Real(v)) => columns.width = *v,
+            (49, XDataValue::Real(v)) => columns.gutter = *v,
+            (50, XDataValue::Integer16(v)) => {
+                for _ in 0..(*v).max(0) {
+                    if let Some(XDataValue::Real(h)) = values.next() {
+                        columns.heights.push(*h);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (columns.column_type != 0).then_some(columns)
 }
 
 #[cfg(test)]
@@ -22730,7 +22765,7 @@ mod tests {
         let h = crate::types::Handle::new(0xC1);
         doc.objects.insert(
             h,
-            ObjectType::SpatialFilter(Box::new(crate::objects::SpatialFilter::new())),
+            ObjectType::SpatialFilter(Box::default()),
         );
         let bytes = crate::io::dxf::writer::DxfWriter::new(&doc)
             .write_to_vec()
@@ -22839,49 +22874,4 @@ mod tests {
             ]
         );
     }
-}
-
-/// The column layout in an MTEXT's ACAD extended data, between
-/// `ACAD_MTEXT_COLUMN_INFO_BEGIN` and `ACAD_MTEXT_COLUMN_INFO_END`: pairs of a
-/// group code and its value, where code 50 is followed by the height count and
-/// then that many heights.
-fn mtext_columns_from_xdata(
-    xdata: &crate::xdata::ExtendedData,
-) -> Option<crate::entities::mtext::MTextColumnData> {
-    use crate::xdata::XDataValue;
-
-    let record = xdata.records().iter().find(|r| {
-        r.application_name == "ACAD"
-            && r.values
-                .iter()
-                .any(|v| matches!(v, XDataValue::String(s) if s == "ACAD_MTEXT_COLUMN_INFO_BEGIN"))
-    })?;
-    let mut values = record
-        .values
-        .iter()
-        .skip_while(|v| !matches!(v, XDataValue::String(s) if s == "ACAD_MTEXT_COLUMN_INFO_BEGIN"))
-        .skip(1);
-    let mut columns = crate::entities::mtext::MTextColumnData::new();
-    while let Some(code) = values.next() {
-        let XDataValue::Integer16(code) = code else {
-            break; // the END marker, or something this block does not hold
-        };
-        match (code, values.next()?) {
-            (75, XDataValue::Integer16(v)) => columns.column_type = *v,
-            (79, XDataValue::Integer16(v)) => columns.auto_height = *v != 0,
-            (76, XDataValue::Integer16(v)) => columns.column_count = i32::from(*v),
-            (78, XDataValue::Integer16(v)) => columns.flow_reversed = *v != 0,
-            (48, XDataValue::Real(v)) => columns.width = *v,
-            (49, XDataValue::Real(v)) => columns.gutter = *v,
-            (50, XDataValue::Integer16(v)) => {
-                for _ in 0..(*v).max(0) {
-                    if let Some(XDataValue::Real(h)) = values.next() {
-                        columns.heights.push(*h);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    (columns.column_type != 0).then_some(columns)
 }

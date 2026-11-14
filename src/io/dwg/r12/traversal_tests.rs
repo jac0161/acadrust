@@ -284,7 +284,7 @@ fn native_viewport_is_unsigned_and_follows_handle_before_geometry() {
     assert_eq!(record.number(10, 0.), 1.);
     assert_eq!(record.number(30, 0.), 3.);
     assert!(!record.pairs.iter().any(|(code, _)| *code == 69));
-    let encoded = encode_entities(&[record.clone()], &tables(), 0, "ANSI_1252").unwrap();
+    let encoded = encode_entities(std::slice::from_ref(record), &tables(), 0, "ANSI_1252").unwrap();
     assert_eq!(encoded, raw);
 }
 

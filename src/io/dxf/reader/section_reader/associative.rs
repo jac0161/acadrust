@@ -531,7 +531,8 @@ fn read_constraint_data(
                 value_dependency,
                 dimension_dependency,
                 direction_type,
-                distance: (direction_type != 0).then(|| cursor.point3(10)),
+                distance: (direction_type == 1).then(|| cursor.point3(10)),
+                datum_line_index: matches!(direction_type, 2 | 3).then(|| cursor.i32(90)),
             }
         }
         "ACRADIUSDIAMETERCONSTRAINT" => {
@@ -1400,7 +1401,7 @@ impl<'a> SectionReader<'a> {
                     && cursor
                         .entries
                         .get(cursor.position + 1)
-                        .map_or(true, |entry| entry.0 == 1);
+                        .is_none_or(|entry| entry.0 == 1);
                 if inline_nodes {
                     let count = cursor.i32(90).max(0).min(100_000);
                     if count > 0 {

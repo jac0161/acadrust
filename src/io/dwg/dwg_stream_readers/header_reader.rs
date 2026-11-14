@@ -93,7 +93,7 @@ impl SectionReader {
             // text/handle sub-streams from the RL.
             let mut merged = DwgMergedReader::new_with_encoding(data, version, 0, encoding);
             // Read the RL (total_size_bits) stored by save_position_for_size
-            let total_size_bits = merged.main_mut().read_raw_long() as i64;
+            let total_size_bits = merged.main_mut().read_raw_long();
             merged.setup_text_and_handle(total_size_bits);
             Ok(SectionReader {
                 inner: SectionReaderInner::MergedReader(merged),
@@ -235,7 +235,7 @@ pub fn read_header_with_encoding(
     if data.len() < 36 {
         return Err(DxfError::Parse("Header section too short".to_string()));
     }
-    if &data[..16] != &start_sentinels::HEADER {
+    if data[..16] != start_sentinels::HEADER {
         return Err(DxfError::InvalidSentinel(
             "Header section start sentinel mismatch".to_string(),
         ));

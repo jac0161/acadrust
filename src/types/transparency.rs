@@ -6,8 +6,10 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+#[derive(Default)]
 pub enum Transparency {
     /// Use the owning layer's transparency.
+    #[default]
     ByLayer,
     /// Use the containing block reference's transparency.
     ByBlock,
@@ -126,11 +128,6 @@ impl Transparency {
     }
 }
 
-impl Default for Transparency {
-    fn default() -> Self {
-        Self::ByLayer
-    }
-}
 
 impl From<u8> for Transparency {
     fn from(alpha: u8) -> Self {

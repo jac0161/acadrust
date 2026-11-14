@@ -355,19 +355,19 @@ impl LineTypeElement {
 
     /// Check if this element displays a shape.
     pub fn is_shape(&self) -> bool {
-        self.complex.as_ref().map_or(false, |c| c.is_shape())
+        self.complex.as_ref().is_some_and(|c| c.is_shape())
     }
 
     /// Check if this element displays text.
     pub fn is_text(&self) -> bool {
-        self.complex.as_ref().map_or(false, |c| c.is_text())
+        self.complex.as_ref().is_some_and(|c| c.is_text())
     }
 
     /// Check if the rotation is absolute (bit 0 of flags).
     pub fn is_absolute_rotation(&self) -> bool {
         self.complex
             .as_ref()
-            .map_or(false, |c| c.is_absolute_rotation())
+            .is_some_and(|c| c.is_absolute_rotation())
     }
 
     /// Check if this element has complex data.

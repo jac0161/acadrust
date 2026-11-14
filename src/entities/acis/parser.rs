@@ -169,7 +169,7 @@ impl SatParser {
         let normal = parts
             .get(1)
             .and_then(|s| s.parse().ok())
-            .unwrap_or(9.9999999999999995e-07);
+            .unwrap_or(1e-6);
         let resfit = parts.get(2).and_then(|s| s.parse().ok());
         Ok((spatial, normal, resfit))
     }
@@ -194,7 +194,7 @@ impl SatParser {
         // word can be split across entries (e.g., "reversed" → "rev\nersed").
         // Since records are '#'-terminated, newlines within record text are
         // purely DXF line-boundary artifacts and can be safely removed.
-        let remaining = remaining.replace('\n', "").replace('\r', "");
+        let remaining = remaining.replace(['\n', '\r'], "");
 
         // Split by '#' to get individual records, then heal splits that landed
         // inside a string.
@@ -316,23 +316,19 @@ impl SatParser {
         let subtype_id = if version.major >= 7 {
             match tokenizer.peek_token() {
                 Some(tok)
-                    if !tok.starts_with('$') && !tok.starts_with('@') && !tok.starts_with('#') =>
-                {
+                    if !tok.starts_with('$') && !tok.starts_with('@') && !tok.starts_with('#')
                     // Check if it looks like a bare integer (digits, possibly negative)
-                    if tok.parse::<i64>().is_ok()
+                    && tok.parse::<i64>().is_ok()
                         && !tok.contains('.')
                         && !tok.contains('e')
                         && !tok.contains('E')
-                    {
+                    => {
                         // Consume it as the subtype_id
                         match tokenizer.next_token() {
                             Some(SatToken::Integer(v)) => v as i32,
                             _ => -1,
                         }
-                    } else {
-                        -1
                     }
-                }
                 _ => -1,
             }
         } else {
@@ -791,14 +787,14 @@ mod tests {
         let (spatial, normal, resfit) =
             SatParser::parse_tolerance_line("1e-06 9.9999999999999995e-07").unwrap();
         assert!((spatial - 1e-06).abs() < 1e-20);
-        assert!((normal - 9.9999999999999995e-07).abs() < 1e-20);
+        assert!((normal - 1e-6).abs() < 1e-20);
         assert!(resfit.is_none());
 
         // With resfit value (v7+ format)
         let (spatial, normal, resfit) =
             SatParser::parse_tolerance_line("1e-06 9.9999999999999995e-07 1e-10").unwrap();
         assert!((spatial - 1e-06).abs() < 1e-20);
-        assert!((normal - 9.9999999999999995e-07).abs() < 1e-20);
+        assert!((normal - 1e-6).abs() < 1e-20);
         assert!((resfit.unwrap() - 1e-10).abs() < 1e-24);
     }
 

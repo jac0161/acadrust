@@ -255,6 +255,7 @@ impl<'a> DxfWriter<'a> {
         // so entity layer/linetype lookups miss and reference a name the
         // written table no longer defines (issue #80).
         crate::io::dwg::dwg_writer::prepare_table_keys(&mut prepared);
+        crate::io::dwg::dwg_writer::prepare_optional_app_ids(&mut prepared);
         // Table entries added after the document was built or read
         // (`Layer::new` + `layers.add`, `AppId::new` + `app_ids.add`) still
         // carry NULL handles. Written as they are, each becomes a `5 / 0`
@@ -333,7 +334,7 @@ impl<'a> DxfWriter<'a> {
 
     /// Get a reference to the document
     pub fn document(&self) -> &CadDocument {
-        &self.document
+        self.document
     }
 }
 
@@ -392,8 +393,8 @@ fn count_extra_handles(document: &CadDocument, version: crate::types::DxfVersion
                 // SEQEND always needs a handle
                 count += 1;
             }
-            EntityType::Insert(insert) => {
-                if insert.has_attributes() {
+            EntityType::Insert(insert)
+                if insert.has_attributes() => {
                     count += insert
                         .attributes
                         .iter()
@@ -402,7 +403,6 @@ fn count_extra_handles(document: &CadDocument, version: crate::types::DxfVersion
                     // SEQEND for attribute sequence
                     count += 1;
                 }
-            }
             _ => {}
         }
     }
@@ -442,7 +442,7 @@ fn compute_max_handle(document: &CadDocument) -> u64 {
             }
         }
     }
-    for (handle, _) in &document.objects {
+    for handle in document.objects.keys() {
         let h = handle.value();
         if h >= max {
             max = h + 1;

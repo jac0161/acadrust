@@ -780,10 +780,15 @@ impl<'a> DwgObjectWriter<'a> {
                 for item in &value.custom_data {
                     self.writer
                         .write_handle(DwgReferenceType::HardOwnership, item.target.value());
-                    self.writer.write_variable_text(&item.value);
                 }
                 self.writer
                     .write_handle(DwgReferenceType::HardOwnership, value.hard_owner.value());
+                if !value.named_values.is_empty() {
+                    self.writer.write_bit_long(value.named_values.len() as i32);
+                    for data in &value.named_values {
+                        self.write_table_custom_data(data);
+                    }
+                }
             }
             ClassObjectData::PersistentSubentityManager(value) => {
                 self.writer.write_bit_long(value.class_version);

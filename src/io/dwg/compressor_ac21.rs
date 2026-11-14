@@ -487,17 +487,17 @@ fn encode_extended_long(length: u32, offset: u32, trailing_lit: u32) -> MatchEnc
 /// Choose the most compact opcode encoding for a given match (length, offset).
 fn encode_match(length: u32, offset: u32, trailing_lit: u32) -> MatchEncoding {
     // Prefer compact (2 bytes) > short/long (3 bytes) > extended (4 bytes) > extended-long (5 bytes)
-    let enc = if length >= 3 && length <= 14 && offset >= 1 && offset <= 512 {
+    let enc = if (3..=14).contains(&length) && (1..=512).contains(&offset) {
         encode_compact(length, offset, trailing_lit)
-    } else if length >= 19 && length <= 50 && offset >= 1 && offset <= 4096 {
+    } else if (19..=50).contains(&length) && (1..=4096).contains(&offset) {
         encode_long(length, offset, trailing_lit)
-    } else if length >= 3 && length <= 18 && offset >= 1 && offset <= 8192 {
+    } else if (3..=18).contains(&length) && (1..=8192).contains(&offset) {
         encode_short(length, offset, trailing_lit)
     } else if length <= 255 && offset <= 0xFFFF {
         // Extended match: offset has no +1, so offset 0 is technically valid
         // but we only call this with offset >= 1
         encode_extended(length, offset, trailing_lit)
-    } else if length >= 256 && offset >= 1 && offset <= 65536 {
+    } else if length >= 256 && (1..=65536).contains(&offset) {
         encode_extended_long(length, offset, trailing_lit)
     } else {
         // Fallback: clamp to extended-long maximum
@@ -561,8 +561,8 @@ fn verify_decode_match(bytes: &[u8]) -> (u32, u32, u32) {
             {
                 si += 1;
             }
-            length = (op >> 3 & 0x10) + length;
-            offset = ((op & 0x78) << 5) + 1 + offset;
+            length += op >> 3 & 0x10;
+            offset += ((op & 0x78) << 5) + 1;
         }
         1 => {
             length = (op & 0x0F) + 3;
@@ -573,12 +573,12 @@ fn verify_decode_match(bytes: &[u8]) -> (u32, u32, u32) {
             {
                 si += 1;
             }
-            offset = ((op & 0xF8) << 5) + 1 + offset;
+            offset += ((op & 0xF8) << 5) + 1;
         }
         2 => {
             offset = bytes[si as usize] as u32;
             si += 1;
-            offset = ((bytes[si as usize] as u32) << 8 & 0xFF00) | offset;
+            offset |= (bytes[si as usize] as u32) << 8 & 0xFF00;
             si += 1;
             length = op & 7;
             if (op & 8) == 0 {
@@ -587,10 +587,10 @@ fn verify_decode_match(bytes: &[u8]) -> (u32, u32, u32) {
                 {
                     si += 1;
                 }
-                length = (op & 0xF8) + length;
+                length += op & 0xF8;
             } else {
                 offset += 1;
-                length = ((bytes[si as usize] as u32) << 3) + length;
+                length += (bytes[si as usize] as u32) << 3;
                 si += 1;
                 op = bytes[si as usize] as u32;
                 #[allow(unused_assignments)]
@@ -1588,21 +1588,20 @@ mod tests {
                     source_offset = bytes[source_index as usize] as u32;
                     source_index += 1;
                     op_code = bytes[source_index as usize] as u32;
-                    length = (op_code >> 3 & 0x10) + length;
-                    source_offset = ((op_code & 0x78) << 5) + 1 + source_offset;
+                    length += op_code >> 3 & 0x10;
+                    source_offset += ((op_code & 0x78) << 5) + 1;
                 }
                 1 => {
                     length = (op_code & 0x0F) + 3;
                     source_offset = bytes[source_index as usize] as u32;
                     source_index += 1;
                     op_code = bytes[source_index as usize] as u32;
-                    source_offset = ((op_code & 0xF8) << 5) + 1 + source_offset;
+                    source_offset += ((op_code & 0xF8) << 5) + 1;
                 }
                 2 => {
                     source_offset = bytes[source_index as usize] as u32;
                     source_index += 1;
-                    source_offset =
-                        ((bytes[source_index as usize] as u32) << 8 & 0xFF00) | source_offset;
+                    source_offset |= (bytes[source_index as usize] as u32) << 8 & 0xFF00;
                     source_index += 1;
                     let base_len = op_code & 7;
                     if (op_code & 8) == 0 {

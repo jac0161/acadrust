@@ -96,19 +96,19 @@ pub fn parse_collada<R: BufRead>(reader: R) -> Result<ColladaScene> {
                 let local = local_name(name.as_ref());
                 match local {
                     b"geometry" => {
-                        let geom = parse_geometry(&mut xml, &e)?;
+                        let geom = parse_geometry(&mut xml, e)?;
                         scene.geometries.push(geom);
                     }
                     b"effect" => {
-                        let id = attr_string(&e, b"id");
+                        let id = attr_string(e, b"id");
                         let color = parse_effect(&mut xml)?;
                         if let Some(id) = id {
                             effects.insert(id, color);
                         }
                     }
                     b"material" => {
-                        let id = attr_string(&e, b"id");
-                        let name = attr_string(&e, b"name")
+                        let id = attr_string(e, b"id");
+                        let name = attr_string(e, b"name")
                             .or_else(|| id.clone())
                             .unwrap_or_default();
                         // Read inner <instance_effect url="#effect_id"/>

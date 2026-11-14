@@ -496,6 +496,7 @@ impl<'a> DwgObjectWriter<'a> {
                 dimension_dependency,
                 direction_type,
                 distance,
+                datum_line_index,
             } => {
                 self.write_explicit_constraint(
                     *owner_id,
@@ -505,9 +506,12 @@ impl<'a> DwgObjectWriter<'a> {
                     *dimension_dependency,
                 );
                 self.writer.write_byte(*direction_type);
-                if *direction_type != 0 {
-                    self.writer
-                        .write_3bit_double(distance.unwrap_or(crate::types::Vector3::ZERO));
+                match direction_type {
+                    0 => {}
+                    2 | 3 => self.writer.write_bit_long(datum_line_index.unwrap_or(-1)),
+                    _ => self
+                        .writer
+                        .write_3bit_double(distance.unwrap_or(crate::types::Vector3::ZERO)),
                 }
             }
             AssocConstraintNodeData::RadiusDiameter {

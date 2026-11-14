@@ -310,7 +310,7 @@ impl DwgObjectReader {
 
             if !self.version.r2010_plus() {
                 // R2007: RL is embedded after type_code
-                let total_size_bits = temp.read_raw_long() as i64;
+                let total_size_bits = temp.read_raw_long();
                 data_start_bits = temp.position_in_bits();
 
                 // Per-object RL convention (matches the reference implementation):
@@ -403,7 +403,7 @@ impl DwgObjectReader {
                 self.encoding,
             );
             let _tc = temp.read_object_type(); // BS
-            temp.read_raw_long() as i64 // RL = main_size_bits
+            temp.read_raw_long() // RL = main_size_bits
         } else {
             // R13–R14: no top-level RL.
             0
@@ -498,7 +498,7 @@ impl DwgObjectReader {
             let graphic_size = if self.version.r2010_plus() {
                 reader.read_bit_long_long()
             } else {
-                reader.read_raw_long() as i64
+                reader.read_raw_long()
             };
             let size = reader.checked_main_count(graphic_size, 8) as usize;
             Some(reader.read_bytes(size))

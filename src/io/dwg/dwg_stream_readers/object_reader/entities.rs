@@ -3640,7 +3640,7 @@ fn read_cell_style(reader: &mut DwgMergedReader) -> Option<CellStyle> {
     Some(style)
 }
 
-fn read_custom_table_data(reader: &mut DwgMergedReader, version: DwgVersion) -> TableCustomData {
+pub(super) fn read_custom_table_data(reader: &mut DwgMergedReader, version: DwgVersion) -> TableCustomData {
     let name = reader.read_variable_text();
     let value = read_cad_value_with_schema(reader, version, true);
     TableCustomData { name, value }
@@ -3704,7 +3704,11 @@ fn read_table_cell(reader: &mut DwgMergedReader, version: DwgVersion) -> TableCe
         cell.custom_data_items
             .push(read_custom_table_data(reader, version));
     }
-    cell.has_linked_data = reader.read_bit_long() == 1;
+    let linked = reader.read_bit_long();
+    cell.has_linked_data = linked != 0;
+    if linked != 1 {
+        cell.linked_data_flags = linked;
+    }
     if cell.has_linked_data {
         let handle = reader.read_handle();
         cell.data_link_handle = (handle != 0).then(|| Handle::from(handle));
@@ -3890,8 +3894,9 @@ fn read_table_cell_data(
     }
 
     // Per-cell style override block (each conditional gated on the override
-    // flags; the grid line-weight bit gates both the weight and the visibility
-    // read, mirroring the source exactly to stay byte-aligned).
+    // flags). lince (DWG-05): the visibility of an edge has its own bit, four
+    // above its line weight's (0x4000 top … 0x20000 left), as in AutoCAD's
+    // SAVEAS 2000; 0x40000 carries no data.
     if reader.read_bit() {
         let flags = reader.read_bit_long();
         let mut style = CellStyle::new();
@@ -3932,7 +3937,7 @@ fn read_table_cell_data(
             if flags & lw_bit != 0 {
                 border.line_weight = crate::types::LineWeight::from_value(reader.read_bit_short());
             }
-            if flags & lw_bit != 0 {
+            if flags & (lw_bit << 4) != 0 {
                 border.invisible = reader.read_bit_short() == 0;
             }
         }
@@ -3960,9 +3965,8 @@ fn read_legacy_table_style_override(reader: &mut DwgMergedReader) -> LegacyTable
     if flags & 0x0001 != 0 {
         value.title_suppressed = Some(reader.read_bit());
     }
-    if flags & 0x0002 != 0 {
-        value.header_suppressed = Some(reader.read_bit());
-    }
+    // 0x0002 (header suppressed) stores no bit: AutoCAD's R2007 tables with
+    // flags 2 and 3 end exactly after the title bit and the three border flags.
     if flags & 0x0004 != 0 {
         value.flow_direction = Some(reader.read_bit_short());
     }
@@ -4689,7 +4693,7 @@ pub fn read_multileader(
             let is_default = reader.read_bit();
             let handle = reader.read_handle();
             arrowhead_overrides.push(MultiLeaderArrowheadOverride {
-                index: index as i32,
+                index,
                 is_default,
                 arrowhead_handle: (handle != 0).then(|| Handle::from(handle)),
             });

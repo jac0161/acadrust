@@ -14,7 +14,9 @@ use crate::types::{Handle, Vector3};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub enum BlockEvalValue {
+    #[default]
     None,
     Real(f64),
     Point([f64; 2]),
@@ -24,11 +26,6 @@ pub enum BlockEvalValue {
     Short(i16),
 }
 
-impl Default for BlockEvalValue {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

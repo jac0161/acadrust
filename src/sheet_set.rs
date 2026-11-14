@@ -1161,7 +1161,7 @@ pub fn relative_path(folder: &std::path::Path, file: &std::path::Path) -> Option
     if common == a.len() {
         out.push(".".into());
     }
-    out.extend(std::iter::repeat("..".to_string()).take(a.len() - common));
+    out.extend(std::iter::repeat_n("..".to_string(), a.len() - common));
     out.extend(b[common..].iter().cloned());
     Some(out.join("\\"))
 }

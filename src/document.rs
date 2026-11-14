@@ -3890,14 +3890,21 @@ impl CadDocument {
     /// window corner on a wall) are removed with it, along with the anchor and
     /// associative objects they own.
     pub fn remove_entity(&mut self, handle: Handle) -> Option<EntityType> {
-        if self.get_entity(handle).is_none() {
-            return None;
-        }
-        let mut queue = vec![handle];
+        self.get_entity(handle)?;
+        let entity = self.remove_entities(&[handle]).into_iter().next()?;
+        Some(Arc::try_unwrap(entity).unwrap_or_else(|arc| (*arc).clone()))
+    }
+
+    /// Remove several entities at once, like [`remove_entity`](Self::remove_entity)
+    /// for each, but scanning the object table a single time for the objects
+    /// they own. Returns the removed entities (requested ones and the Arch
+    /// entities anchored to them), without cloning them.
+    pub fn remove_entities(&mut self, handles: &[Handle]) -> Vec<Arc<EntityType>> {
+        let mut queue: Vec<Handle> = handles.iter().rev().copied().collect();
         let mut doomed = Vec::new();
         let mut seen = HashSet::new();
         while let Some(handle) = queue.pop() {
-            if !seen.insert(handle) {
+            if !seen.insert(handle) || self.get_entity(handle).is_none() {
                 continue;
             }
             if crate::classes::arch::is_architecture_entity(self, handle) {
@@ -3905,21 +3912,18 @@ impl CadDocument {
             }
             doomed.push(handle);
         }
-        let mut removed = None;
-        for handle in doomed {
-            for owned in crate::classes::arch::objects_owned_by(self, handle) {
-                self.objects.remove(&owned);
-                self.reactors_by_handle.remove(&owned);
-            }
-            let Some(entity) = self.remove_entity_arc(handle) else {
-                continue;
-            };
-            let entity = Arc::try_unwrap(entity).unwrap_or_else(|arc| (*arc).clone());
-            if removed.is_none() {
-                removed = Some(entity);
-            }
+        if doomed.is_empty() {
+            return Vec::new();
         }
-        removed
+        let roots: HashSet<Handle> = doomed.iter().copied().collect();
+        for owned in crate::classes::arch::objects_owned_by(self, &roots) {
+            self.objects.remove(&owned);
+            self.reactors_by_handle.remove(&owned);
+        }
+        doomed
+            .into_iter()
+            .filter_map(|handle| self.remove_entity_arc(handle))
+            .collect()
     }
 
     /// Add a new paper space layout to the document.
@@ -4203,9 +4207,7 @@ impl CadDocument {
         }
         if dict_handle.is_null() {
             let mut candidates: Vec<Handle> = self
-                .objects
-                .iter()
-                .filter_map(|(_handle, object)| match object {
+                .objects.values().filter_map(|object| match object {
                     ObjectType::Layout(layout) if !layout.owner.is_null() => Some(layout.owner),
                     _ => None,
                 })
@@ -5358,7 +5360,7 @@ impl CadDocument {
         }
 
         // Check objects
-        for (handle, _) in &self.objects {
+        for handle in self.objects.keys() {
             let h = handle.value();
             if h >= max_handle {
                 max_handle = h + 1;
@@ -5571,7 +5573,7 @@ impl CadDocument {
         // just below) makes the check trivially true and remaps every object,
         // orphaning entity->object links like Underlay/RasterImage definitions.
         let non_object_used = used_handles.clone();
-        for (h, _) in &self.objects {
+        for h in self.objects.keys() {
             let v = h.value();
             if v > 0 {
                 used_handles.insert(v);
@@ -5746,7 +5748,7 @@ impl CadDocument {
             };
 
             // Update dictionary entry values that reference remapped handles
-            for (_, obj) in self.objects.iter_mut() {
+            for obj in self.objects.values_mut() {
                 match obj {
                     ObjectType::Dictionary(d) => {
                         if let Some(new_owner) = remap_map.get(&d.owner.value()) {

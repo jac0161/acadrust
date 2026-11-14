@@ -909,7 +909,7 @@ fn encode_property_set(set: &CompoundPropertySet) -> Vec<u8> {
     let mut output = vec![0u8; table_size];
     write_u32(&mut output, 4, set.properties.len() as u32);
     for (index, property) in set.properties.iter().enumerate() {
-        while output.len() % 4 != 0 {
+        while !output.len().is_multiple_of(4) {
             output.push(0);
         }
         let offset = output.len();
@@ -926,7 +926,7 @@ fn encode_property_set(set: &CompoundPropertySet) -> Vec<u8> {
         write_u32(&mut output, table_offset + 4, offset as u32);
         output.extend_from_slice(&bytes);
     }
-    while output.len() % 4 != 0 {
+    while !output.len().is_multiple_of(4) {
         output.push(0);
     }
     let size = output.len() as u32;
@@ -1025,7 +1025,7 @@ fn encode_scalar(value: &CompoundPropertyValue) -> (u32, Vec<u8>) {
             let mut body = (values.len() as u32).to_le_bytes().to_vec();
             for value in values {
                 body.extend_from_slice(&encode_scalar(value).1);
-                while body.len() % 4 != 0 {
+                while !body.len().is_multiple_of(4) {
                     body.push(0);
                 }
             }

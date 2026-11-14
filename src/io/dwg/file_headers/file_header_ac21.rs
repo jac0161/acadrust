@@ -240,6 +240,7 @@ impl CrcRandomEncoder {
                 self.table[self.index]
             };
             let bytes = val.to_le_bytes();
+            #[allow(clippy::manual_memcpy)] // bucle de bytes heredado; se deja tal cual
             for j in 0..(buffer.len() - buf_idx) {
                 buffer[buf_idx + j] = bytes[j];
             }
@@ -360,7 +361,7 @@ fn get_system_page_size(data_size: u64) -> u64 {
 
     // The page should fit the data at least 2 times (with RS overhead)
     let file_page_size =
-        ((aligned * 2) + RS_SYSTEM_K as u64 - 1) / RS_SYSTEM_K as u64 * RS_N as u64;
+        (aligned * 2).div_ceil(RS_SYSTEM_K as u64) * RS_N as u64;
 
     if file_page_size < MIN_SYSTEM_PAGE_SIZE as u64 {
         MIN_SYSTEM_PAGE_SIZE as u64
@@ -377,7 +378,7 @@ fn get_system_page_size(data_size: u64) -> u64 {
 fn encode_value(value: u64, control: u64) -> u64 {
     let shift = (control & 0x1F) as u32;
     if shift != 0 {
-        (value << shift) | (value >> (64 - shift))
+        value.rotate_left(shift)
     } else {
         value
     }
@@ -392,7 +393,7 @@ fn encode_value(value: u64, control: u64) -> u64 {
 /// (format sections 5.4 and 5.13.1); those bytes are not stored before parity.
 fn rs_encode_data_page_non_interleaved(data: &[u8], random_seed: u64) -> Vec<u8> {
     let aligned_size = (data.len() + CRC_BLOCK_SIZE - 1) & !(CRC_BLOCK_SIZE - 1);
-    let factor = (aligned_size + RS_DATA_K - 1) / RS_DATA_K;
+    let factor = aligned_size.div_ceil(RS_DATA_K);
     let mut padded = vec![0u8; factor * RS_DATA_K];
     padded[..data.len()].copy_from_slice(data);
     CrcRandomEncoder::new(random_seed).fill_random(&mut padded[aligned_size..]);
@@ -421,7 +422,7 @@ fn rs_encode_data_page_interleaved(data: &[u8], _encoding: u64) -> Vec<u8> {
     // total_size = (compressed_size + 7) & ~7   (CRC block alignment)
     // factor = ceil(total_size / block_size)
     let total_size = (data.len() + CRC_BLOCK_SIZE - 1) & !(CRC_BLOCK_SIZE - 1);
-    let factor = (total_size + block_size - 1) / block_size;
+    let factor = total_size.div_ceil(block_size);
 
     // Pad data to factor × block_size bytes
     let padded_len = factor * block_size;
@@ -609,7 +610,7 @@ impl DwgFileHeaderWriterAC21 {
             self.build_page_map_ordered(page_map_page_id, page_map2_page_id, pm_page_size as i64);
 
         // Write page map pages at current end-of-file position
-        let pm_abs_offset = output.seek(SeekFrom::Current(0))?;
+        let pm_abs_offset = output.stream_position()?;
         let page_map_result = self.write_system_page_at(
             output,
             &page_map_data,
@@ -617,7 +618,7 @@ impl DwgFileHeaderWriterAC21 {
             page_map_page_id,
             pm_page_size,
         )?;
-        let pm_abs_offset2 = output.seek(SeekFrom::Current(0))?;
+        let pm_abs_offset2 = output.stream_position()?;
         let _page_map2_result = self.write_system_page_at(
             output,
             &page_map_data,
@@ -732,11 +733,11 @@ impl DwgFileHeaderWriterAC21 {
 
         // Write file header copy at end of file
         output.seek(SeekFrom::End(0))?;
-        let header2_offset = output.seek(SeekFrom::Current(0))?;
+        let header2_offset = output.stream_position()?;
         output.write_all(&file_header_page)?;
 
         // ── Step 6: Patch file size and header2_offset ──
-        let file_size = output.seek(SeekFrom::Current(0))?;
+        let file_size = output.stream_position()?;
         metadata.file_size = file_size;
         metadata.header2_offset = header2_offset - RESERVED_HEADER_SIZE as u64;
 
@@ -825,7 +826,7 @@ impl DwgFileHeaderWriterAC21 {
         self.next_page_id += 1;
 
         let aligned_size = align32(page.bytes.len());
-        let offset = output.seek(SeekFrom::Current(0))?;
+        let offset = output.stream_position()?;
         output.write_all(&page.bytes)?;
         let padding = aligned_size - page.bytes.len();
         if padding > 0 {
@@ -885,6 +886,7 @@ impl DwgFileHeaderWriterAC21 {
         // correction_factor = floor(max_factor * RS_SYSTEM_K / align8(compressed_size))
         // This maximizes error correction redundancy, matching ref file behavior.
         let aligned_comp = ((page_data.len() as u64 + 7) & !7) as usize;
+        #[allow(clippy::manual_checked_ops)] // la rama 0 documenta el caso de página vacía
         let correction_factor: u64 = if aligned_comp == 0 {
             1
         } else {
@@ -894,7 +896,7 @@ impl DwgFileHeaderWriterAC21 {
             cf.max(2) as u64 // minimum correction factor of 2
         };
         let total_size = aligned_comp * correction_factor as usize;
-        let factor = (total_size + RS_SYSTEM_K - 1) / RS_SYSTEM_K;
+        let factor = total_size.div_ceil(RS_SYSTEM_K);
 
         // RS-encode with RS(255, 239)
         let mut padded_data = vec![0u8; factor * RS_SYSTEM_K];
@@ -950,7 +952,7 @@ impl DwgFileHeaderWriterAC21 {
         // Page size must accommodate the encoded data
         let page_size = align32(encoded.len()).max(target_page_size);
 
-        let offset = output.seek(SeekFrom::Current(0))?;
+        let offset = output.stream_position()?;
         output.write_all(&encoded)?;
         let padding = page_size - encoded.len();
         if padding > 0 {
@@ -1441,7 +1443,7 @@ mod tests {
         for data_size in [8, 100, 500, 1000, 5000, 10000, 50000u64] {
             let ps = get_system_page_size(data_size);
             assert!(
-                ps == 0x400 || ps % PAGE_ALIGN_SIZE as u64 == 0,
+                ps == 0x400 || ps.is_multiple_of(PAGE_ALIGN_SIZE as u64),
                 "Page size {ps:#X} for data_size {data_size} not aligned"
             );
         }
@@ -1551,10 +1553,10 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
         writer
-            .add_section(&mut output, names::CLASSES, &vec![0xBB; 200])
+            .add_section(&mut output, names::CLASSES, &[0xBB; 200])
             .unwrap();
 
         assert_eq!(writer.sections.len(), 2);
@@ -1567,7 +1569,7 @@ mod tests {
         let mut output = Cursor::new(Vec::new());
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
-        let result = writer.add_section(&mut output, "AcDb:Nonexistent", &vec![0; 10]);
+        let result = writer.add_section(&mut output, "AcDb:Nonexistent", &[0; 10]);
         assert!(result.is_err());
     }
 
@@ -1579,7 +1581,7 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
 
         let map_data = writer.build_section_map().unwrap();
@@ -1611,7 +1613,7 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::CLASSES, &vec![0xBB; 50])
+            .add_section(&mut output, names::CLASSES, &[0xBB; 50])
             .unwrap();
 
         let map_data = writer.build_section_map().unwrap();
@@ -1637,7 +1639,7 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
 
         let map_data = writer.build_page_map_ordered(100, 101, 0x400);
@@ -1673,28 +1675,28 @@ mod tests {
 
         // Add minimal sections
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
         writer
-            .add_section(&mut output, names::CLASSES, &vec![0xBB; 50])
+            .add_section(&mut output, names::CLASSES, &[0xBB; 50])
             .unwrap();
         writer
-            .add_section(&mut output, names::SUMMARY_INFO, &vec![0; 10])
+            .add_section(&mut output, names::SUMMARY_INFO, &[0; 10])
             .unwrap();
         writer
-            .add_section(&mut output, names::PREVIEW, &vec![0xCC; 20])
+            .add_section(&mut output, names::PREVIEW, &[0xCC; 20])
             .unwrap();
         writer
-            .add_section(&mut output, names::APP_INFO, &vec![0xDD; 30])
+            .add_section(&mut output, names::APP_INFO, &[0xDD; 30])
             .unwrap();
         writer
-            .add_section(&mut output, names::AUX_HEADER, &vec![0; 50])
+            .add_section(&mut output, names::AUX_HEADER, &[0; 50])
             .unwrap();
         writer
             .add_section(&mut output, names::ACDB_OBJECTS, &vec![0xEE; 300])
             .unwrap();
         writer
-            .add_section(&mut output, names::HANDLES, &vec![0xFF; 100])
+            .add_section(&mut output, names::HANDLES, &[0xFF; 100])
             .unwrap();
 
         writer.write_file(&mut output).unwrap();
@@ -1718,13 +1720,13 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
         writer
-            .add_section(&mut output, names::CLASSES, &vec![0xBB; 50])
+            .add_section(&mut output, names::CLASSES, &[0xBB; 50])
             .unwrap();
         writer
-            .add_section(&mut output, names::PREVIEW, &vec![0xCC; 20])
+            .add_section(&mut output, names::PREVIEW, &[0xCC; 20])
             .unwrap();
 
         writer.write_file(&mut output).unwrap();
@@ -1742,7 +1744,7 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
 
         writer.write_file(&mut output).unwrap();
@@ -1763,7 +1765,7 @@ mod tests {
         let mut writer = DwgFileHeaderWriterAC21::new(DxfVersion::AC1021, &mut output).unwrap();
 
         writer
-            .add_section(&mut output, names::HEADER, &vec![0xAA; 100])
+            .add_section(&mut output, names::HEADER, &[0xAA; 100])
             .unwrap();
 
         writer.write_file(&mut output).unwrap();
@@ -1815,12 +1817,12 @@ mod tests {
         }
 
         for size in [
-            0, 1, 7, 8, 248, 249, 250, 251, 252, 500, 502, 503, 768, 4097,
+            0usize, 1, 7, 8, 248, 249, 250, 251, 252, 500, 502, 503, 768, 4097,
         ] {
             let data: Vec<u8> = (0..size).map(|i| (i * 73 + 11) as u8).collect();
             let page = encode_data_page(&data, 1, false);
             let aligned = (size + 7) & !7;
-            let blocks = (aligned + RS_DATA_K - 1) / RS_DATA_K;
+            let blocks = aligned.div_ceil(RS_DATA_K);
             assert_eq!(page.bytes.len(), aligned + blocks * 4, "size={size}");
             assert_eq!(&page.bytes[..size], &data);
             assert!(page.bytes[size..aligned].iter().all(|&b| b == 0));
@@ -1928,8 +1930,8 @@ mod tests {
         let encoded = rs_encode_data_page_interleaved(&original, 4);
 
         // Reader's decode parameters: all data pages use block_size=251
-        let total_size = (300 + 7) & !7; // 304
-        let factor = (total_size + 251 - 1) / 251; // ceil(304/251) = 2
+        let total_size: usize = (300 + 7) & !7; // 304
+        let factor = total_size.div_ceil(251); // ceil(304/251) = 2
         assert_eq!(encoded.len(), factor * 255);
 
         let mut decoded = vec![0u8; total_size];
@@ -1947,8 +1949,8 @@ mod tests {
         let encoded = encode_data_page(&original, 1, false).bytes;
 
         // Reader's decode parameters for encoding=1:
-        let total_size = (200 + 7) & !7; // 200 (already aligned)
-        let factor = (total_size + 251 - 1) / 251; // ceil(200/251) = 1
+        let total_size: usize = (200 + 7) & !7; // 200 (already aligned)
+        let factor = total_size.div_ceil(251); // ceil(200/251) = 1
         assert_eq!(encoded.len(), total_size + factor * 4);
 
         let decoded = reed_solomon_decode_compact(&encoded, original.len());

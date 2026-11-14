@@ -434,8 +434,8 @@ impl VisualStyle {
 pub(crate) fn store_visual_style_roundtrip(document: &mut crate::document::CadDocument) {
     use crate::objects::{ObjectType, XRecordEntry, XRecordValue};
     use crate::types::DxfVersion;
-    // AutoCAD keeps the R2013+ properties in this record when it saves 2004 to 2010.
-    if !(DxfVersion::AC1018..DxfVersion::AC1027).contains(&document.version) {
+    // AutoCAD keeps the R2013+ properties in this record when it saves 2000 to 2010.
+    if !(DxfVersion::AC1015..DxfVersion::AC1027).contains(&document.version) {
         return;
     }
     // 2010 already stores the 28 core properties and their flags; 2004/2007 also need the flags.
@@ -575,6 +575,112 @@ pub(crate) fn restore_visual_style_roundtrip(document: &mut crate::document::Cad
     for (handle, entries) in records {
         if let Some(ObjectType::VisualStyle(style)) = document.objects.get_mut(&handle) {
             style.restore_post_2010_properties(&entries);
+        }
+    }
+    // From here so that the DWG and DXF readers need no change of their own.
+    restore_material_roundtrip(document);
+}
+
+/// lince (VS-02): AutoCAD's SAVEAS 2000/2004 keeps a MATERIAL's 2007+ fields (and the source of its six maps) in
+/// an `ACAD_XREC_ROUNDTRIP` record of its extension dictionary, with these group codes in this order (the
+/// reflectivity is a second 149). Checked with a material of AutoCAD 2027 saved to 2000 and 2004.
+const MATERIAL_ROUNDTRIP_CODES: [i32; 12] = [148, 149, 149, 93, 94, 282, 72, 77, 171, 175, 179, 273];
+
+impl Material {
+    fn roundtrip_maps(&mut self) -> [&mut MaterialMap; 6] {
+        [
+            &mut self.diffuse_map,
+            &mut self.specular_map,
+            &mut self.reflection_map,
+            &mut self.opacity_map,
+            &mut self.bump_map,
+            &mut self.refraction_map,
+        ]
+    }
+}
+
+pub(crate) fn store_material_roundtrip(document: &mut crate::document::CadDocument) {
+    use crate::objects::{ObjectType, XRecordEntry, XRecordValue};
+    use crate::types::DxfVersion;
+    if !matches!(document.version, DxfVersion::AC1015 | DxfVersion::AC1018) {
+        return;
+    }
+    let mut materials: Vec<_> = document
+        .objects
+        .iter()
+        .filter_map(|(handle, object)| match object {
+            ObjectType::Material(material) => Some((*handle, material.clone())),
+            _ => None,
+        })
+        .collect();
+    // In handle order, as AutoCAD creates them.
+    materials.sort_by_key(|material| material.0);
+    for (handle, mut material) in materials {
+        let sources = material.roundtrip_maps().map(|map| XRecordValue::Int16(map.source as i16));
+        let values = [
+            XRecordValue::Double(material.translucence),
+            XRecordValue::Double(material.self_illumination),
+            XRecordValue::Double(material.reflectivity),
+            XRecordValue::Int32(material.illumination_model),
+            XRecordValue::Int32(material.channel_flags),
+            XRecordValue::Byte(material.mode as u8),
+        ];
+        let mut entries = vec![XRecordEntry {
+            code: 102,
+            value: XRecordValue::String("MATERIAL".into()),
+        }];
+        entries.extend(
+            MATERIAL_ROUNDTRIP_CODES
+                .iter()
+                .zip(values.into_iter().chain(sources))
+                .map(|(code, value)| XRecordEntry { code: *code, value }),
+        );
+        let record = document.ensure_xrecord(handle, "ACAD_XREC_ROUNDTRIP");
+        if let Some(ObjectType::XRecord(record)) = document.objects.get_mut(&record) {
+            record.entries = entries;
+        }
+        // In name order, as AutoCAD keeps the dictionary (the record goes before FBXASSET and the *TILE entries).
+        let dictionary = document.extension_dictionary_handle(handle);
+        if let Some(ObjectType::Dictionary(d)) = dictionary.and_then(|h| document.objects.get_mut(&h)) {
+            d.entries.sort_by(|a, b| a.0.cmp(&b.0));
+        }
+    }
+}
+
+fn restore_material_roundtrip(document: &mut crate::document::CadDocument) {
+    use crate::objects::ObjectType;
+    use crate::types::DxfVersion;
+    // A 2007+ body carries the fields itself.
+    if document.version >= DxfVersion::AC1021 {
+        return;
+    }
+    let records: Vec<_> = document
+        .objects
+        .iter()
+        .filter_map(|(handle, object)| {
+            if !matches!(object, ObjectType::Material(_)) {
+                return None;
+            }
+            let record = document.xrecord(*handle, "ACAD_XREC_ROUNDTRIP")?;
+            let entries = &record.entries;
+            let is_material = entries.first()?.value.as_string() == Some("MATERIAL")
+                && entries.len() > MATERIAL_ROUNDTRIP_CODES.len()
+                && entries[1..].iter().zip(MATERIAL_ROUNDTRIP_CODES).all(|(e, code)| e.code == code);
+            is_material.then(|| (*handle, entries[1..].iter().map(|e| e.value.clone()).collect::<Vec<_>>()))
+        })
+        .collect();
+    for (handle, v) in records {
+        if let Some(ObjectType::Material(m)) = document.objects.get_mut(&handle) {
+            let int = |i: usize| v[i].as_i32().unwrap_or_default();
+            m.translucence = v[0].as_double().unwrap_or(m.translucence);
+            m.self_illumination = v[1].as_double().unwrap_or(m.self_illumination);
+            m.reflectivity = v[2].as_double().unwrap_or(m.reflectivity);
+            m.illumination_model = int(3);
+            m.channel_flags = int(4);
+            m.mode = int(5);
+            for (i, map) in m.roundtrip_maps().into_iter().enumerate() {
+                map.source = int(6 + i) as u8;
+            }
         }
     }
 }
@@ -1199,9 +1305,11 @@ mod visual_style_roundtrip_tests {
     /// VS-01: a DWG 2018 visual style saved as 2004, 2007 or 2010 keeps its R2013+ properties in an
     /// ACAD_XREC_ROUNDTRIP record laid out as AutoCAD 2027 writes it: the dictionary as reactor, merge
     /// style 1 and, in 2010, without the RTVSPropertyOp flags the 2010 object already holds.
+    /// VS-02: also in 2000, and in 2000 and 2004 ACAD_VISUALSTYLE keeps the style (it lost the entry, and
+    /// AutoCAD rebuilt the dictionary on opening).
     #[test]
     fn modern_properties_roundtrip_record_as_autocad() {
-        for (version, entries) in [(DxfVersion::AC1018, 252), (DxfVersion::AC1021, 252), (DxfVersion::AC1024, 126)] {
+        for (version, entries) in [(DxfVersion::AC1015, 252), (DxfVersion::AC1018, 252), (DxfVersion::AC1021, 252), (DxfVersion::AC1024, 126)] {
             let mut doc = CadDocument::new();
             doc.version = version;
             let dictionary = doc.header.acad_visualstyle_dict_handle;
@@ -1229,6 +1337,69 @@ mod visual_style_roundtrip_tests {
             assert_eq!(record.reactors, [xdict], "{version:?}");
             assert_eq!(record.cloning_flags, DictionaryCloningFlags::KeepExisting, "{version:?}");
             assert_eq!(record.entries.len(), entries, "{version:?}");
+            let Some(ObjectType::Dictionary(d)) = read.objects.get(&dictionary) else { panic!("{version:?}") };
+            assert_eq!(d.get("Sketchy"), Some(handle), "{version:?}");
+        }
+    }
+
+    /// VS-02: a material's 2007+ fields and map sources survive DWG 2000 and 2004 in the ACAD_XREC_ROUNDTRIP
+    /// record of AutoCAD 2027's SAVEAS (the values of a material made in AutoCAD and saved to both), are read
+    /// back from it, and a 2000 file saved again or as 2018 keeps them.
+    #[test]
+    fn material_roundtrip_record_as_autocad() {
+        use crate::objects::{Material, XRecordValue};
+        for version in [DxfVersion::AC1015, DxfVersion::AC1018] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            let dictionary = doc.header.acad_material_dict_handle;
+            let handle = doc.allocate_handle();
+            let mut m = Material::new();
+            (m.handle, m.owner, m.name) = (handle, dictionary, "Prueba".into());
+            (m.translucence, m.self_illumination, m.reflectivity) = (0.25, 0.5, 0.75);
+            (m.illumination_model, m.channel_flags, m.mode) = (1, 31, 1);
+            // The sources of the sample: diffuse and reflection 0, the other four 1.
+            for map in [&mut m.specular_map, &mut m.opacity_map, &mut m.bump_map, &mut m.refraction_map] {
+                map.source = 1;
+            }
+            doc.objects.insert(handle, ObjectType::Material(Box::new(m.clone())));
+            if let Some(ObjectType::Dictionary(d)) = doc.objects.get_mut(&dictionary) {
+                d.add_entry("Prueba", handle);
+            }
+            let read = DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(&doc).unwrap())).read().unwrap();
+            let record = read.xrecord(handle, "ACAD_XREC_ROUNDTRIP").expect("no roundtrip record");
+            let values: Vec<_> = record.entries.iter().map(|e| (e.code, e.value.clone())).collect();
+            use XRecordValue::*;
+            assert_eq!(
+                values,
+                [
+                    (102, String("MATERIAL".into())),
+                    (148, Double(0.25)),
+                    (149, Double(0.5)),
+                    (149, Double(0.75)),
+                    (93, Int32(1)),
+                    (94, Int32(31)),
+                    (282, Byte(1)),
+                    (72, Int16(0)),
+                    (77, Int16(1)),
+                    (171, Int16(0)),
+                    (175, Int16(1)),
+                    (179, Int16(1)),
+                    (273, Int16(1)),
+                ],
+                "{version:?}"
+            );
+            let mut again = read.clone();
+            again.version = DxfVersion::AC1032;
+            for doc in [read.clone(), DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(&read).unwrap())).read().unwrap(), DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(&again).unwrap())).read().unwrap()] {
+                let Some(ObjectType::Material(r)) = doc.objects.get(&handle) else { panic!("{version:?}") };
+                assert_eq!(
+                    (r.translucence, r.self_illumination, r.reflectivity, r.illumination_model, r.channel_flags, r.mode),
+                    (0.25, 0.5, 0.75, 1, 31, 1),
+                    "{version:?} {:?}",
+                    doc.version
+                );
+                assert_eq!((r.diffuse_map.source, r.specular_map.source, r.reflection_map.source), (0, 1, 0), "{version:?}");
+            }
         }
     }
 }

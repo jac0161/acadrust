@@ -254,11 +254,11 @@ impl ImageDefinition {
 
     /// Check if this appears to be a supported image format
     pub fn is_supported_format(&self) -> bool {
-        match self.file_extension().map(|s| s.to_lowercase()).as_deref() {
+        matches!(
+            self.file_extension().map(|s| s.to_lowercase()).as_deref(),
             Some("bmp") | Some("jpg") | Some("jpeg") | Some("png") | Some("tif") | Some("tiff")
-            | Some("gif") | Some("pcx") | Some("tga") => true,
-            _ => false,
-        }
+                | Some("gif") | Some("pcx") | Some("tga")
+        )
     }
 
     /// Mark the image as loaded

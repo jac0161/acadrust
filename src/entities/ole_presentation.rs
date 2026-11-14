@@ -433,7 +433,7 @@ impl<'a> Cfb<'a> {
         let mut dir = Vec::new();
         for e in dirdata.chunks_exact(128) {
             let name_len = u16::from_le_bytes(e[64..66].try_into().unwrap()) as usize;
-            if name_len < 2 || name_len > 64 {
+            if !(2..=64).contains(&name_len) {
                 continue;
             }
             let units: Vec<u16> = e[..name_len - 2]

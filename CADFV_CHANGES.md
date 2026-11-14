@@ -105,3 +105,17 @@ All of `src/` is again the exact copy shipped with LinceCAD (22 files changed, 2
 - Default dimension style: the "Standard" style kept when a drawing lacks it points DIMTXSTY to a text style of the file.
 
 Checked with LinceCAD's library tests and end-to-end tests against AutoCAD 2027 and progeCAD (AUDIT 0) in DWG 2000–2018.
+
+## 2026-11-15 — sync with LinceCAD main (DWG tables, data links, MTEXT, Clippy)
+
+All of `src/` is again the exact copy shipped with LinceCAD (83 files changed, 1 new). The library tests now ship the fixtures they read (`tests/fixtures/annotative`, `tests/fixtures/damaged`). Main areas:
+
+- **Tables and data links** (DWG-03, DWG-05): AutoCAD 2027's DWG 2007 samples with tables and Data Links open; a DATALINK's custom data are handles only; pre-R2010 table cells keep each edge's visibility in its own bit; block properties tables keep each column's default value.
+- **MTEXT** (DWG-04, new `io/dwg/mtext_defined_height.rs`): the defined height of an MTEXT goes to DWG 2000/2004 as AutoCAD's `ACAD` XDATA and comes back; MTEXT columns of DWG 2007–2013 move to DWG 2018 as AutoCAD does; the 0x0002 flag (header suppressed) of pre-R2010 tables.
+- **Xref-dependent styles** (DWG-06): a text style dependent on an xref (`SHAPE|REF`) is kept even without the xref block, as AutoCAD does.
+- **Visual styles and materials** (VS-02): a DWG 2007+ saved to 2000/2004 keeps ACAD_VISUALSTYLE and ACAD_MATERIAL, with the MATERIAL's 2007+ fields in `ACAD_XREC_ROUNDTRIP`.
+- **Handles and defaults** (HND-02): opening a DWG no longer adds the "Standard" dimension style or the AcadAnnotative, AcCmTransparency and AcAecLayerStandard APPIDs the file lacks.
+- **Constraint groups**: perpendicular and parallel distances to a line.
+- **Clippy**: the crate is Clippy-clean (also with the `import` feature); fixes from `clippy --fix`, documented crate-level allows, local allows in byte loops.
+
+Checked with LinceCAD's library tests and end-to-end tests against AutoCAD 2027 (AUDIT 0).

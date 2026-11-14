@@ -222,6 +222,17 @@
 //! audits rather than a guarantee for every possible drawing.
 
 #![allow(missing_docs)]
+// Criterio de Clippy para el lector/escritor DWG/DXF: solo cambios neutros; estos lints
+// piden reescrituras que pueden cambiar el comportamiento o la API pública.
+#![allow(clippy::chunks_exact_to_as_chunks)] // chunks_exact(N) sobre bytes se lee mejor que as_chunks::<N>().0
+#![allow(clippy::needless_range_loop)] // el índice recorre varias tablas o escribe bytes a la vez
+#![allow(clippy::manual_clamp)] // clamp() cambia el resultado con NaN y entra en pánico si min > max
+#![allow(clippy::too_many_arguments)] // constructores y escritores que reflejan los campos del formato
+#![allow(clippy::type_complexity)] // tuplas de retorno locales; un alias no aclara nada
+#![allow(clippy::large_enum_variant)] // poner Box en las variantes cambiaría la API pública
+#![allow(clippy::neg_cmp_op_on_partial_ord)] // `!(a <= b)` rechaza a propósito los NaN
+#![allow(clippy::field_reassign_with_default)] // campos asignados uno a uno en el orden en que los lee el formato
+#![allow(clippy::while_let_loop)] // loop + if let/else break en los lectores, como en el resto del workspace
 #![warn(rustdoc::missing_crate_level_docs)]
 
 pub mod classes;

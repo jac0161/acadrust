@@ -1021,7 +1021,15 @@ impl<'a> DwgObjectWriter<'a> {
     // Ã¢â€â‚¬Ã¢â€â‚¬ MText Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     fn write_mtext(&mut self, e: &MText) {
-        self.entity_preamble(common::OBJ_MTEXT, &e.common);
+        // Before R2007 the defined height goes in ACAD XDATA, as AutoCAD writes it (DWG-04).
+        match e.rectangle_height.filter(|h| *h != 0.0 && !self.version.r2007_plus()) {
+            Some(h) => {
+                let mut c = e.common.clone();
+                crate::io::dwg::mtext_defined_height::add(&mut c.extended_data, h);
+                self.entity_preamble(common::OBJ_MTEXT, &c);
+            }
+            None => self.entity_preamble(common::OBJ_MTEXT, &e.common),
+        }
 
         // Insertion pt 3BD 10
         self.writer.write_3bit_double(e.insertion_point);
@@ -2255,7 +2263,7 @@ impl<'a> DwgObjectWriter<'a> {
                     }
                     BoundaryEdge::Spline(se) => {
                         self.writer.write_byte(4);
-                        self.writer.write_bit_long(se.degree as i32);
+                        self.writer.write_bit_long(se.degree);
                         self.writer.write_bit(se.rational);
                         self.writer.write_bit(se.periodic);
 
@@ -2772,7 +2780,7 @@ impl<'a> DwgObjectWriter<'a> {
         self.write_child_entity_data(common::OBJ_VERTEX_2D, vertex_handle, parent);
 
         // Flags EC 70 NOT bit-pair-coded
-        self.writer.write_byte(v.flags.bits() as u8);
+        self.writer.write_byte(v.flags.bits());
 
         // Point 3BD 10; real files may carry per-vertex Z.
         self.writer.write_bit_double(v.location.x);
@@ -3042,7 +3050,7 @@ impl<'a> DwgObjectWriter<'a> {
     fn write_polygon_mesh(&mut self, e: &PolygonMeshEntity) {
         self.entity_preamble(common::OBJ_POLYLINE_MESH, &e.common);
 
-        self.writer.write_bit_short(e.flags.bits() as i16);
+        self.writer.write_bit_short(e.flags.bits());
         self.writer.write_bit_short(e.smooth_type as i16);
         self.writer.write_bit_short(e.m_vertex_count);
         self.writer.write_bit_short(e.n_vertex_count);
@@ -3250,8 +3258,8 @@ impl<'a> DwgObjectWriter<'a> {
 
     // Ã¢â€â‚¬Ã¢â€â‚¬ Underlay (PDF / DWF / DGN) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
-    /// Write an UNDERLAY reference (AcDbUnderlayReference).
-    ///
+    // Write an UNDERLAY reference (AcDbUnderlayReference).
+    //
     // â”€â”€ Table (ACAD_TABLE) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
     // Inverse of the table reader. Cell styles / borders acadrust does not
@@ -3339,7 +3347,7 @@ impl<'a> DwgObjectWriter<'a> {
         }
     }
 
-    fn write_table_custom_data(&mut self, data: &TableCustomData) {
+    pub(super) fn write_table_custom_data(&mut self, data: &TableCustomData) {
         self.writer.write_variable_text(&data.name);
         self.write_table_cad_value_with_schema(&data.value, true);
     }
@@ -3524,7 +3532,7 @@ impl<'a> DwgObjectWriter<'a> {
         for data in &cell.custom_data_items {
             self.write_table_custom_data(data);
         }
-        self.writer.write_bit_long(cell.has_linked_data as i32);
+        self.writer.write_bit_long(cell.linked_data_code());
         if cell.has_linked_data {
             self.writer.write_handle(
                 DwgReferenceType::HardPointer,
@@ -3717,9 +3725,11 @@ impl<'a> DwgObjectWriter<'a> {
         }
         self.writer.write_bit(cell.style.is_some());
         if let Some(style) = &cell.style {
-            // lince (fix): AutoCAD no abre el DWG anterior a R2007 con bordes de celda propios (ErrorStatus 53,
-            // comprobado con accoreconsole en AC1015/AC1018); en esos formatos los bordes viven en el bloque *T.
-            let flags = if self.version.r2007_plus() { style.override_flags } else { style.override_flags & !0x3FC0 };
+            // lince (DWG-05): the visibility of an edge has its own bit (0x4000 top … 0x20000 left). Our model
+            // ties it to the line weight (0x400…, as DXF codes 279/289 do), so a weight is written with its
+            // visibility. Gated by the weight bit, AutoCAD read a short too few or too many (ErrorStatus=53 in
+            // DWG 2000/2004, which 24b766f3 had worked around by dropping the cell's edges).
+            let flags = style.override_flags | ((style.override_flags & 0x3C00) << 4);
             self.writer.write_bit_long(flags);
             self.writer.write_byte(cell.virtual_edge as u8);
             if flags & 0x01 != 0 {
@@ -3754,6 +3764,8 @@ impl<'a> DwgObjectWriter<'a> {
                 }
                 if flags & lw_bit != 0 {
                     self.writer.write_bit_short(border.line_weight.as_i16());
+                }
+                if flags & (lw_bit << 4) != 0 {
                     self.writer.write_bit_short((!border.invisible) as i16);
                 }
             }
@@ -3779,10 +3791,7 @@ impl<'a> DwgObjectWriter<'a> {
             self.writer
                 .write_bit(value.title_suppressed.unwrap_or(false));
         }
-        if flags & 0x0002 != 0 {
-            self.writer
-                .write_bit(value.header_suppressed.unwrap_or(false));
-        }
+        // 0x0002 (header suppressed) has no bit in DWG, as the reader expects.
         if flags & 0x0004 != 0 {
             self.writer
                 .write_bit_short(value.flow_direction.unwrap_or(0));
@@ -4072,7 +4081,7 @@ impl<'a> DwgObjectWriter<'a> {
         self.writer.write_3bit_double(e.u_vector);
         self.writer.write_3bit_double(e.v_vector);
         self.writer.write_2raw_double(e.size);
-        self.writer.write_bit_short(e.flags.bits() as i16);
+        self.writer.write_bit_short(e.flags.bits());
         self.writer.write_bit(e.clipping_enabled);
         self.writer.write_byte(e.brightness);
         self.writer.write_byte(e.contrast);
@@ -4141,7 +4150,7 @@ impl<'a> DwgObjectWriter<'a> {
         self.writer.write_3bit_double(e.u_vector);
         self.writer.write_3bit_double(e.v_vector);
         self.writer.write_2raw_double(e.size);
-        self.writer.write_bit_short(e.flags.bits() as i16);
+        self.writer.write_bit_short(e.flags.bits());
         self.writer.write_bit(e.clipping_enabled);
         self.writer.write_byte(e.brightness);
         self.writer.write_byte(e.contrast);

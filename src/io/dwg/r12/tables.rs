@@ -963,7 +963,7 @@ mod tests {
         let named = record("APPID", &[(2, "\u{130}SLEM")]);
         let (size, bytes) = encode_table(
             "APPID",
-            &[named.clone()],
+            std::slice::from_ref(&named),
             &table,
             &HashMap::new(),
             "ANSI_1254",

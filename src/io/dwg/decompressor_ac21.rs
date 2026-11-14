@@ -229,8 +229,8 @@ fn read_instructions(
             *source_index += 1;
             *op_code = byte(buffer, *source_index)?;
             *source_index += 1;
-            *length = (*op_code >> 3 & 0x10) + *length;
-            *source_offset = ((*op_code & 0x78) << 5) + 1 + *source_offset;
+            *length += *op_code >> 3 & 0x10;
+            *source_offset += ((*op_code & 0x78) << 5) + 1;
         }
         1 => {
             *length = (*op_code & 0x0F) + 3;
@@ -238,23 +238,22 @@ fn read_instructions(
             *source_index += 1;
             *op_code = byte(buffer, *source_index)?;
             *source_index += 1;
-            *source_offset = ((*op_code & 0xF8) << 5) + 1 + *source_offset;
+            *source_offset += ((*op_code & 0xF8) << 5) + 1;
         }
         2 => {
             *source_offset = byte(buffer, *source_index)?;
             *source_index += 1;
-            *source_offset =
-                (byte(buffer, *source_index)? << 8 & 0xFF00) | *source_offset;
+            *source_offset |= byte(buffer, *source_index)? << 8 & 0xFF00;
             *source_index += 1;
             *length = *op_code & 7;
 
             if (*op_code & 8) == 0 {
                 *op_code = byte(buffer, *source_index)?;
                 *source_index += 1;
-                *length = (*op_code & 0xF8) + *length;
+                *length += *op_code & 0xF8;
             } else {
                 *source_offset += 1;
-                *length = (byte(buffer, *source_index)? << 3) + *length;
+                *length += byte(buffer, *source_index)? << 3;
                 *source_index += 1;
                 *op_code = byte(buffer, *source_index)?;
                 *source_index += 1;

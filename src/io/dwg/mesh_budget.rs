@@ -103,7 +103,7 @@ impl MeshFaceBudget {
 fn probe_host_memory() -> (Option<u64>, Option<u64>) {
     #[cfg(windows)]
     {
-        return windows_memory();
+        windows_memory()
     }
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {

@@ -12,7 +12,7 @@
 //!
 //! Payload layout (ODA `.dwg` spec §28 "Extended Entity Data"), one item each:
 //!   * `0`  string   — R2007+: `u16` code-unit count + UTF-16LE; earlier:
-//!                      `u8` byte length + `u16` codepage + encoded bytes.
+//!     `u8` byte length + `u16` codepage + encoded bytes.
 //!   * `2`  control  — one byte: `0` = `{`, `1` = `}`.
 //!   * `3`  layer    — 8-byte little-endian layer table handle.
 //!   * `4`  binary   — `u8` length + raw bytes.

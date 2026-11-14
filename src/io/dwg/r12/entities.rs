@@ -453,11 +453,7 @@ fn encode_record(
         flag |= 2;
     }
     let is3d = matches!(record.kind.as_str(), "LINE" | "3DLINE" | "POINT" | "3DFACE");
-    let elevation = if record.kind == "POLYLINE" {
-        record.number(30, record.number(38, 0.))
-    } else {
-        record.number(30, record.number(38, 0.))
-    };
+    let elevation = record.number(30, record.number(38, 0.));
     if !is3d && elevation != 0. {
         flag |= 4;
     }
@@ -1366,7 +1362,7 @@ fn decode_eed(
 }
 
 fn parse_hex(value: &str) -> Result<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(invalid("Invalid R12 binary hex string"));
     }
     value

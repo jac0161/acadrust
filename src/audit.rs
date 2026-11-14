@@ -157,6 +157,7 @@ pub enum RepairAction {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Default)]
 pub struct RepairReport {
     pub before: AuditReport,
     pub after: AuditReport,
@@ -164,16 +165,6 @@ pub struct RepairReport {
     pub unresolved: Vec<AuditIssue>,
 }
 
-impl Default for RepairReport {
-    fn default() -> Self {
-        Self {
-            before: AuditReport::default(),
-            after: AuditReport::default(),
-            actions: Vec::new(),
-            unresolved: Vec::new(),
-        }
-    }
-}
 
 fn table_handles(
     document: &CadDocument,

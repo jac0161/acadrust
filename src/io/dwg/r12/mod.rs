@@ -740,7 +740,6 @@ fn prepare_viewport_xdata(document: &CadDocument, records: &mut [EntityRecord]) 
             // Parse a standard stream to retain all structured XDATA values.
             use crate::io::dxf::DxfStreamWriter;
             writer.flush()?;
-            drop(writer);
             let mut reader = DxfTextReader::new(BufReader::new(Cursor::new(buffer)))?;
             while let Some(pair) = reader.read_pair()? {
                 native.pairs.push((pair.code, pair.value_string));

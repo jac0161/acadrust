@@ -261,9 +261,7 @@ impl CadDocument {
         // native LINE result for the common custom-style case.
         let style_flags = style.map(|style| style.flags);
         let cap_line = |at_start: bool| {
-            let Some(flags) = style_flags else {
-                return None;
-            };
+            let flags = style_flags?;
             let square = if at_start {
                 flags.start_square_cap
             } else {
@@ -308,9 +306,7 @@ impl CadDocument {
             Some(EntityType::Line(line))
         };
         let cap_arc = |at_start: bool| {
-            let Some(flags) = style_flags else {
-                return None;
-            };
+            let flags = style_flags?;
             let round = if at_start {
                 flags.start_round_cap
             } else {

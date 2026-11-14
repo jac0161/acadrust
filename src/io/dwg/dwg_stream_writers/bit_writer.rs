@@ -557,10 +557,10 @@ impl DwgBitWriter {
     pub fn write_object_type(&mut self, value: i16) {
         if self.version.uses_compact_object_type() {
             // R2010+ compact encoding
-            if value >= 0 && value <= 255 {
+            if (0..=255).contains(&value) {
                 self.write_2bits(0);
                 self.write_byte(value as u8);
-            } else if value >= 0x1F0 && value <= 0x2EF {
+            } else if (0x1F0..=0x2EF).contains(&value) {
                 self.write_2bits(1);
                 self.write_byte((value - 0x1F0) as u8);
             } else {

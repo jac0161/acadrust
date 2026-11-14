@@ -942,6 +942,9 @@ pub struct TableCell {
     pub virtual_edge: i16,
     /// Has linked data.
     pub has_linked_data: bool,
+    /// Stored linked-data value (group 92) when it is not plain 1: AutoCAD
+    /// writes 3 for sheet-list cells linked to a DATALINK. 0 = write 1.
+    pub linked_data_flags: i32,
     /// Custom data value.
     pub custom_data: i32,
     /// Pre-R2010 edge flag byte.
@@ -974,6 +977,15 @@ pub struct TableCell {
 }
 
 impl TableCell {
+    /// Linked-data value to store (group 92): 0 when unlinked.
+    pub fn linked_data_code(&self) -> i32 {
+        match (self.has_linked_data, self.linked_data_flags) {
+            (false, _) => 0,
+            (true, 0) => 1,
+            (true, flags) => flags,
+        }
+    }
+
     /// Creates an empty cell.
     pub fn new() -> Self {
         Self {
@@ -991,6 +1003,7 @@ impl TableCell {
             merged: 0,
             virtual_edge: 0,
             has_linked_data: false,
+            linked_data_flags: 0,
             custom_data: 0,
             edge_flags: 0,
             value_handle: None,
@@ -2375,6 +2388,43 @@ impl Default for TableBuilder {
     }
 }
 
+pub fn legacy_override_properties(flags: i32) -> CellStylePropertyFlags {
+    let mut properties = CellStylePropertyFlags::NONE;
+    for (bit, property) in [
+        (0x01, CellStylePropertyFlags::ALIGNMENT),
+        (0x02, CellStylePropertyFlags::BACKGROUND_COLOR),
+        (0x04, CellStylePropertyFlags::BACKGROUND_COLOR),
+        (0x08, CellStylePropertyFlags::CONTENT_COLOR),
+        (0x10, CellStylePropertyFlags::TEXT_STYLE),
+        (0x20, CellStylePropertyFlags::TEXT_HEIGHT),
+    ] {
+        if flags & bit != 0 {
+            properties |= property;
+        }
+    }
+    properties
+}
+
+pub fn cell_override_bit(code: i32) -> Option<i32> {
+    Some(match code {
+        170 => 0x01,
+        283 => 0x02,
+        63 => 0x04,
+        64 => 0x08,
+        7 => 0x10,
+        140 => 0x20,
+        69 => 0x40,
+        65 => 0x80,
+        66 => 0x100,
+        68 => 0x200,
+        279 | 289 => 0x400,
+        275 | 285 => 0x800,
+        276 | 286 => 0x1000,
+        278 | 288 => 0x2000,
+        _ => return None,
+    })
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -2964,41 +3014,4 @@ mod tests {
             );
         }
     }
-}
-
-pub fn legacy_override_properties(flags: i32) -> CellStylePropertyFlags {
-    let mut properties = CellStylePropertyFlags::NONE;
-    for (bit, property) in [
-        (0x01, CellStylePropertyFlags::ALIGNMENT),
-        (0x02, CellStylePropertyFlags::BACKGROUND_COLOR),
-        (0x04, CellStylePropertyFlags::BACKGROUND_COLOR),
-        (0x08, CellStylePropertyFlags::CONTENT_COLOR),
-        (0x10, CellStylePropertyFlags::TEXT_STYLE),
-        (0x20, CellStylePropertyFlags::TEXT_HEIGHT),
-    ] {
-        if flags & bit != 0 {
-            properties |= property;
-        }
-    }
-    properties
-}
-
-pub fn cell_override_bit(code: i32) -> Option<i32> {
-    Some(match code {
-        170 => 0x01,
-        283 => 0x02,
-        63 => 0x04,
-        64 => 0x08,
-        7 => 0x10,
-        140 => 0x20,
-        69 => 0x40,
-        65 => 0x80,
-        66 => 0x100,
-        68 => 0x200,
-        279 | 289 => 0x400,
-        275 | 285 => 0x800,
-        276 | 286 => 0x1000,
-        278 | 288 => 0x2000,
-        _ => return None,
-    })
 }

@@ -167,11 +167,11 @@ impl Spline {
         let p = usize::try_from(degree).unwrap_or(0).clamp(1, max_degree);
         let internal = n - p - 1;
         let mut kv = Vec::with_capacity(n + p + 1);
-        kv.extend(std::iter::repeat(0.0).take(p + 1));
+        kv.extend(std::iter::repeat_n(0.0, p + 1));
         for i in 1..=internal {
             kv.push(i as f64 / (internal + 1) as f64);
         }
-        kv.extend(std::iter::repeat(1.0).take(p + 1));
+        kv.extend(std::iter::repeat_n(1.0, p + 1));
         (p as i32, kv)
     }
 

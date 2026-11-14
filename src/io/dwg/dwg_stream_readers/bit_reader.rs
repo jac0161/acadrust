@@ -938,9 +938,7 @@ impl DwgBitReader {
                 self.try_read_unicode_text()
             }
         } else {
-            let Some(length) = self.try_read_bit_short() else {
-                return None;
-            };
+            let length = self.try_read_bit_short()?;
             if length <= 0 {
                 return Some(String::new());
             }
@@ -1257,6 +1255,16 @@ impl DwgBitReader {
     }
 }
 
+/// R2007+ text is UTF-16 and holds every character, so a `\U+XXXX` in it is
+/// content; only the `\M+` double-byte escapes are transport.
+fn decode_mif(text: String) -> String {
+    if text.contains("\\M+") {
+        crate::io::dxf::code_page::decode_mif_escapes(&text)
+    } else {
+        text
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  Tests — round-trip with DwgBitWriter
 // ════════════════════════════════════════════════════════════════════════════
@@ -1476,15 +1484,5 @@ mod tests {
         assert!((v1 - std::f64::consts::PI).abs() < 1e-10, "v1 = {}", v1);
         let v2 = r.read_bit_double_with_default(reference);
         assert!((v2 - 100.5).abs() < 1e-10, "v2 = {}", v2);
-    }
-}
-
-/// R2007+ text is UTF-16 and holds every character, so a `\U+XXXX` in it is
-/// content; only the `\M+` double-byte escapes are transport.
-fn decode_mif(text: String) -> String {
-    if text.contains("\\M+") {
-        crate::io::dxf::code_page::decode_mif_escapes(&text)
-    } else {
-        text
     }
 }

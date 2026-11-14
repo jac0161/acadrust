@@ -352,8 +352,8 @@ impl<'a> SectionReader<'a> {
                     }
                     _ => {}
                 }
-            } else if in_format {
-                if pair.code == 300 && pair.value_string == "CONTENTFORMAT" {
+            } else if in_format
+                && pair.code == 300 && pair.value_string == "CONTENTFORMAT" {
                     let format = self.read_table_content_format_dxf()?;
                     content.format_override_flags = format.format_override_flags;
                     content.format_property_flags = format.format_property_flags;
@@ -368,7 +368,6 @@ impl<'a> SectionReader<'a> {
                     content.text_style_name = format.text_style_name;
                     content.text_height = format.text_height;
                 }
-            }
         }
         Ok(content)
     }
@@ -415,7 +414,11 @@ impl<'a> SectionReader<'a> {
                     301 if pair.value_string == "CUSTOMDATA" => {
                         cell.custom_data_items = self.read_table_custom_data_dxf()?;
                     }
-                    92 => cell.has_linked_data = pair.as_i32().unwrap_or(0) != 0,
+                    92 => {
+                        let linked = pair.as_i32().unwrap_or(0);
+                        cell.has_linked_data = linked != 0;
+                        cell.linked_data_flags = if linked == 1 { 0 } else { linked };
+                    }
                     340 if cell.has_linked_data => {
                         let handle = parse_dxf_handle(&pair.value_string);
                         cell.data_link_handle = (!handle.is_null()).then_some(handle);
@@ -742,12 +745,11 @@ impl<'a> SectionReader<'a> {
                     }
                     _ => {}
                 },
-                "AcDbTableContent" => {
-                    if pair.code == 340 {
+                "AcDbTableContent"
+                    if pair.code == 340 => {
                         let handle = parse_dxf_handle(&pair.value_string);
                         table.table_style_handle = (!handle.is_null()).then_some(handle);
                     }
-                }
                 _ => {}
             }
         }

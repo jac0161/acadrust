@@ -72,6 +72,24 @@ fn read_parameter(reader: &mut DwgMergedReader) -> BlockParameter {
     }
 }
 
+/// A typed BLOCKPROPERTIESTABLE value (cells and column defaults) with the
+/// DXF group code it is listed under.
+fn read_properties_table_value(
+    reader: &mut DwgMergedReader,
+    value_type: i16,
+) -> Option<BlockPropertiesTableField> {
+    let (code, value) = match value_type {
+        40 => (140, BlockPropertiesTableValue::Real(reader.read_bit_double())),
+        1 => (300, BlockPropertiesTableValue::Text(reader.read_variable_text())),
+        90 => (90, BlockPropertiesTableValue::Integer(i64::from(reader.read_bit_long()))),
+        70 => (170, BlockPropertiesTableValue::Integer(i64::from(reader.read_bit_short()))),
+        91 => (340, BlockPropertiesTableValue::Handle(Handle::from(reader.read_handle()))),
+        290 => (290, BlockPropertiesTableValue::Boolean(reader.read_bit())),
+        _ => return None,
+    };
+    Some(BlockPropertiesTableField { code, value })
+}
+
 fn read_one_point(reader: &mut DwgMergedReader) -> BlockOnePointParameter {
     let parameter = read_parameter(reader);
     let definition_point = reader.read_3bit_double();
@@ -271,7 +289,7 @@ fn read_history_entity(
     // There is no bit-length prefix and no wireframe tail. Later writers
     // use the sized embedded-entity form, which does not start with the
     // ACIS/ASM signature, so that form stays on the path below.
-    if matches!(type_code, 37 | 38 | 39) {
+    if matches!(type_code, 37..=39) {
         if let Some(acis_data) = read_inline_history_modeler(reader) {
             return Some(if type_code == 37 {
                 let mut region = crate::entities::Region::new();
@@ -1060,13 +1078,17 @@ pub fn read_dynamic_block_data(
                     });
                 }
                 integer!(90, reader.read_bit_long());
-                for _ in 0..2 {
-                    fields.push(BlockPropertiesTableField {
-                        code: 170,
-                        value: BlockPropertiesTableValue::Integer(i64::from(
-                            reader.read_bit_short(),
-                        )),
-                    });
+                integer!(170, reader.read_bit_short());
+                // lince (DWG-05): the second 170 is the type of the column's
+                // default value, which follows it (DXF: `170 1` + `300 Custom`;
+                // −9999 = none). Read as a flag list, every later text of the
+                // table was off by one: harmless in R2007+ (texts in their own
+                // stream, written back in the same order) but AutoCAD rejected
+                // a DWG 2000/2004 copy (ErrorStatus=53).
+                let value_type = reader.read_bit_short();
+                integer!(170, value_type);
+                if value_type != -9999 {
+                    fields.push(read_properties_table_value(reader, value_type)?);
                 }
                 for code in 290..=294 {
                     fields.push(BlockPropertiesTableField {
@@ -1090,27 +1112,7 @@ pub fn read_dynamic_block_data(
                 for _ in 0..column_count {
                     let value_type = reader.read_bit_short();
                     integer!(170, value_type);
-                    let value = match value_type {
-                        40 => BlockPropertiesTableValue::Real(reader.read_bit_double()),
-                        1 => BlockPropertiesTableValue::Text(reader.read_variable_text()),
-                        90 => BlockPropertiesTableValue::Integer(i64::from(reader.read_bit_long())),
-                        70 => {
-                            BlockPropertiesTableValue::Integer(i64::from(reader.read_bit_short()))
-                        }
-                        91 => BlockPropertiesTableValue::Handle(Handle::from(reader.read_handle())),
-                        290 => BlockPropertiesTableValue::Boolean(reader.read_bit()),
-                        _ => return None,
-                    };
-                    let code = match value_type {
-                        40 => 140,
-                        1 => 300,
-                        90 => 90,
-                        70 => 170,
-                        91 => 340,
-                        290 => 290,
-                        _ => unreachable!(),
-                    };
-                    fields.push(BlockPropertiesTableField { code, value });
+                    fields.push(read_properties_table_value(reader, value_type)?);
                 }
             }
             integer!(93, reader.read_bit_long());

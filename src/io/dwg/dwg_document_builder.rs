@@ -1413,6 +1413,19 @@ impl DwgDocumentBuilder {
         // which may collide with objects from the DWG file.
         let _ = document.block_records.remove("*Model_Space");
         let _ = document.block_records.remove("*Paper_Space");
+        // lince (HND-02): nor are the optional defaults a file may lack (the "Standard" dimension style, kept
+        // only if the header's current style is not the file's, and the AcadAnnotative, AcCmTransparency and
+        // AcAecLayerStandard application ids, which the writers add when needed): kept, they took handles from
+        // HANDSEED on.
+        let current_dimstyle = document.header.current_dimstyle_handle.value();
+        if parsed_entries.iter().any(|e| matches!(e, ParsedEntry::DimStyle(h, _) if *h == current_dimstyle)) {
+            let _ = document.dim_styles.remove("Standard");
+        }
+        if parsed_entries.iter().any(|e| matches!(e, ParsedEntry::AppId(..))) {
+            let _ = document.app_ids.remove("AcadAnnotative");
+            let _ = document.app_ids.remove("AcCmTransparency");
+            let _ = document.app_ids.remove(crate::tables::layer::LAYER_DESCRIPTION_APP);
+        }
 
         let layer_transparency_app_handle = parsed_entries.iter().find_map(|entry| match entry {
             ParsedEntry::AppId(handle, data)
@@ -1585,8 +1598,10 @@ impl DwgDocumentBuilder {
                     style.is_vertical = data.is_vertical;
                     style.flags.backward = (data.generation & 2) != 0;
                     style.flags.upside_down = (data.generation & 4) != 0;
-                    // Only mark xref-dependent if the xref block record handle is valid
-                    style.xref_dependent = data.xref_dependent && data.xref_handle != 0;
+                    // lince (DWG-06): kept even without an xref block, as AutoCAD does: the
+                    // unnamed shape style of Building Section (70 = 17) is listed as
+                    // "SHAPE|REF" and AUDIT flags it once it is no longer xref-dependent.
+                    style.xref_dependent = data.xref_dependent;
                     style.xref_block_record_handle = Handle::from(data.xref_handle);
                     // Use add_allow_duplicate for shape-file-only styles (empty name)
                     // so multiple empty-named styles are preserved. Named styles use
@@ -1790,7 +1805,7 @@ impl DwgDocumentBuilder {
                     view.default_lighting_type = data.default_lighting_type as i16;
                     view.brightness = data.brightness;
                     view.contrast = data.contrast;
-                    view.ambient_color = data.ambient_color.clone();
+                    view.ambient_color = data.ambient_color;
                     view.paper_space = data.paper_space;
                     view.ucs_associated = data.ucs_associated;
                     view.ucs_origin = data.ucs_origin;
@@ -1875,7 +1890,7 @@ impl DwgDocumentBuilder {
                     vp.default_lighting_type = data.default_lighting_type as i16;
                     vp.brightness = data.brightness;
                     vp.contrast = data.contrast;
-                    vp.ambient_color = data.ambient_color.clone();
+                    vp.ambient_color = data.ambient_color;
                     vp.ucs_at_origin = data.ucs_at_origin;
                     vp.ucs_per_viewport = data.ucs_per_viewport;
                     vp.ucs_origin = data.ucs_origin;
@@ -2568,13 +2583,10 @@ impl DwgDocumentBuilder {
                     _ => None,
                 })
                 .flatten()
-                .filter_map(|(name, handle)| {
-                    matches!(
+                .filter(|&(_name, handle)| matches!(
                         document.objects.get(handle),
                         Some(crate::objects::ObjectType::Group(_))
-                    )
-                    .then(|| (*handle, name.clone()))
-                })
+                    )).map(|(name, handle)| (*handle, name.clone()))
                 .collect();
             for (handle, name) in group_names {
                 if let Some(crate::objects::ObjectType::Group(group)) =
@@ -2813,14 +2825,13 @@ impl DwgDocumentBuilder {
             let mut best_count = 0usize;
             for (h, obj) in &document.objects {
                 if let crate::objects::ObjectType::Dictionary(dict) = obj {
-                    if dict.owner.is_null() {
-                        if dict.entries.len() > best_count
-                            || (dict.entries.len() == best_count && h.value() > best.value())
+                    if dict.owner.is_null()
+                        && (dict.entries.len() > best_count
+                            || (dict.entries.len() == best_count && h.value() > best.value()))
                         {
                             best = *h;
                             best_count = dict.entries.len();
                         }
-                    }
                 }
             }
             if !best.is_null() {
@@ -3178,9 +3189,7 @@ impl DwgDocumentBuilder {
                     xd.raw_dwg_eed
                         .iter()
                         .filter_map(|(app_handle, bytes)| {
-                            let Some(name) = app_name_by_handle.get(app_handle) else {
-                                return None;
-                            };
+                            let name = app_name_by_handle.get(app_handle)?;
                             if xd.get_record(name).is_some() {
                                 return None;
                             }
@@ -3201,6 +3210,12 @@ impl DwgDocumentBuilder {
                         let xd = &mut std::sync::Arc::make_mut(entity).common_mut().extended_data;
                         for record in records {
                             xd.add_record(record);
+                        }
+                    }
+                    // DWG-04: before R2007 the defined height of an MTEXT is ACAD XDATA.
+                    if matches!(entity.as_ref(), EntityType::MText(m) if m.rectangle_height.is_none() && m.common.extended_data.get_record("ACAD").is_some()) {
+                        if let EntityType::MText(m) = std::sync::Arc::make_mut(entity) {
+                            m.rectangle_height = crate::io::dwg::mtext_defined_height::take(&mut m.common.extended_data);
                         }
                     }
                     if let EntityType::Insert(ins) = entity.as_ref() {
@@ -3894,7 +3909,7 @@ impl DwgDocumentBuilder {
         handle: u64,
         raw_type_code: i16,
         type_code: i16,
-        mut reader: &mut crate::io::dwg::dwg_stream_readers::merged_reader::DwgMergedReader,
+        reader: &mut crate::io::dwg::dwg_stream_readers::merged_reader::DwgMergedReader,
         document: &mut Pass2Output,
         maps: &HandleMaps,
         pending: &mut PendingPolylines,
@@ -3914,7 +3929,7 @@ impl DwgDocumentBuilder {
         if is_entity {
             let entity_data = self
                 .obj_reader
-                .read_common_entity_data(&mut reader, type_code);
+                .read_common_entity_data(reader, type_code);
             if entity_data.common.handle != handle {
                 reader.invalidate("DWG entity handle disagrees with handle map");
             }
@@ -3946,7 +3961,7 @@ impl DwgDocumentBuilder {
             match type_code {
                 // ── Simple entities ────────────────────────────────
                 OBJ_LINE => {
-                    let data = entities::read_line(&mut reader, self.obj_reader.version());
+                    let data = entities::read_line(reader, self.obj_reader.version());
                     let mut e = Line::new();
                     e.common = entity_common;
                     e.start = data.start;
@@ -3956,7 +3971,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Line(e));
                 }
                 OBJ_POINT => {
-                    let data = entities::read_point(&mut reader);
+                    let data = entities::read_point(reader);
                     let mut e = Point::new();
                     e.common = entity_common;
                     e.location = data.location;
@@ -3966,7 +3981,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Point(e));
                 }
                 OBJ_CIRCLE => {
-                    let data = entities::read_circle(&mut reader);
+                    let data = entities::read_circle(reader);
                     let mut e = Circle::new();
                     e.common = entity_common;
                     e.center = data.center;
@@ -3976,7 +3991,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Circle(e));
                 }
                 OBJ_LIGHT => {
-                    let data = entities::read_light(&mut reader, photometric_lighting);
+                    let data = entities::read_light(reader, photometric_lighting);
                     let mut e = Light::new();
                     e.common = entity_common;
                     e.class_version = data.class_version;
@@ -4013,11 +4028,11 @@ impl DwgDocumentBuilder {
                 | OBJ_OLEFRAME
                 | OBJ_PROXY_ENTITY => {
                     let data = match type_code {
-                        OBJ_CAMERA => entities::read_camera(&mut reader),
-                        OBJ_SECTIONOBJECT => entities::read_section_object(&mut reader),
-                        OBJ_ARCALIGNEDTEXT => entities::read_arc_aligned_text(&mut reader),
+                        OBJ_CAMERA => entities::read_camera(reader),
+                        OBJ_SECTIONOBJECT => entities::read_section_object(reader),
+                        OBJ_ARCALIGNEDTEXT => entities::read_arc_aligned_text(reader),
                         OBJ_RTEXT => {
-                            let mut data = entities::read_remote_text(&mut reader);
+                            let mut data = entities::read_remote_text(reader);
                             if let ExtendedEntityData::RemoteText(remote) = &mut data {
                                 remote.style_name = maps.style_name(remote.style_handle.value());
                             }
@@ -4025,27 +4040,27 @@ impl DwgDocumentBuilder {
                         }
                         OBJ_GEOPOSITIONMARKER => {
                             let mut marker = entities::read_geo_position_marker(
-                                &mut reader,
+                                reader,
                                 self.obj_reader.version(),
                                 self.obj_reader.dxf_version(),
                             );
                             marker.data.embedded_mtext = marker
                                 .embedded_mtext
-                                .map(|mtext| mtext_from_data(mtext, EntityCommon::new(), &maps));
+                                .map(|mtext| mtext_from_data(mtext, EntityCommon::new(), maps));
                             ExtendedEntityData::GeoPositionMarker(marker.data)
                         }
-                        OBJ_NAVISWORKSMODEL => entities::read_coordination_model(&mut reader),
+                        OBJ_NAVISWORKSMODEL => entities::read_coordination_model(reader),
                         OBJ_POINTCLOUD => entities::read_point_cloud(
-                            &mut reader,
+                            reader,
                             self.obj_reader.version(),
                             self.obj_reader.dxf_version(),
                         ),
-                        OBJ_POINTCLOUDEX => entities::read_point_cloud_ex(&mut reader),
+                        OBJ_POINTCLOUDEX => entities::read_point_cloud_ex(reader),
                         OBJ_OLEFRAME => {
-                            entities::read_ole_frame(&mut reader, self.obj_reader.version())
+                            entities::read_ole_frame(reader, self.obj_reader.version())
                         }
                         OBJ_PROXY_ENTITY => entities::read_proxy_entity(
-                            &mut reader,
+                            reader,
                             self.obj_reader.version(),
                             self.obj_reader.dxf_version(),
                             entity_common.graphic_data.clone().unwrap_or_default(),
@@ -4059,7 +4074,7 @@ impl DwgDocumentBuilder {
                     })));
                 }
                 OBJ_ARC => {
-                    let data = entities::read_arc(&mut reader);
+                    let data = entities::read_arc(reader);
                     let mut e = Arc::new();
                     e.common = entity_common;
                     e.center = data.center;
@@ -4071,7 +4086,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Arc(e));
                 }
                 OBJ_ELLIPSE => {
-                    let data = entities::read_ellipse(&mut reader);
+                    let data = entities::read_ellipse(reader);
                     let mut e = Ellipse::new();
                     e.common = entity_common;
                     e.center = data.center;
@@ -4083,19 +4098,19 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Ellipse(e));
                 }
                 OBJ_RAY => {
-                    let data = entities::read_ray(&mut reader);
+                    let data = entities::read_ray(reader);
                     let mut e = Ray::new(data.base_point, data.direction);
                     e.common = entity_common;
                     let _ = document.add_entity(EntityType::Ray(e));
                 }
                 OBJ_XLINE => {
-                    let data = entities::read_xline(&mut reader);
+                    let data = entities::read_xline(reader);
                     let mut e = XLine::new(data.base_point, data.direction);
                     e.common = entity_common;
                     let _ = document.add_entity(EntityType::XLine(e));
                 }
                 OBJ_SOLID | OBJ_TRACE => {
-                    let data = entities::read_solid(&mut reader);
+                    let data = entities::read_solid(reader);
                     let z = data.elevation;
                     let mut e = Solid::new(
                         crate::types::Vector3::new(data.first_corner.x, data.first_corner.y, z),
@@ -4110,7 +4125,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Solid(e));
                 }
                 OBJ_3DFACE => {
-                    let data = entities::read_face3d(&mut reader, self.obj_reader.version());
+                    let data = entities::read_face3d(reader, self.obj_reader.version());
                     let mut e = Face3D::new(
                         data.first_corner,
                         data.second_corner,
@@ -4127,7 +4142,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Face3D(e));
                 }
                 OBJ_SHAPE => {
-                    let data = entities::read_shape(&mut reader);
+                    let data = entities::read_shape(reader);
                     let mut e = Shape::new();
                     e.common = entity_common;
                     e.insertion_point = data.insertion_point;
@@ -4144,7 +4159,7 @@ impl DwgDocumentBuilder {
 
                 // ── Moderate entities ──────────────────────────────
                 OBJ_INSERT => {
-                    let data = entities::read_insert(&mut reader, self.obj_reader.version());
+                    let data = entities::read_insert(reader, self.obj_reader.version());
                     // Both subclasses follow the block handle with the viewport
                     // they are drawn in. Inventor's model-space view blocks overlap,
                     // so the link is what keeps each view inside its own viewport;
@@ -4170,7 +4185,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Insert(e));
                 }
                 OBJ_MINSERT => {
-                    let data = entities::read_minsert(&mut reader, self.obj_reader.version());
+                    let data = entities::read_minsert(reader, self.obj_reader.version());
                     let block_name = maps.block_name(data.insert.block_handle);
                     let mut e = Insert::new(block_name, data.insert.insert_point);
                     e.common = entity_common;
@@ -4191,7 +4206,7 @@ impl DwgDocumentBuilder {
                     // table and links it to the block that renders its cells; on
                     // R2010+ the inline table content (columns/rows/cells) follows.
                     let data = entities::read_table(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -4242,7 +4257,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Table(Box::new(e)));
                 }
                 OBJ_LWPOLYLINE => {
-                    let data = entities::read_lwpolyline(&mut reader, self.obj_reader.version());
+                    let data = entities::read_lwpolyline(reader, self.obj_reader.version());
                     let mut e = LwPolyline::new();
                     e.common = entity_common;
                     e.vertices = data
@@ -4266,7 +4281,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_SPLINE => {
                     let data = entities::read_spline(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -4294,7 +4309,7 @@ impl DwgDocumentBuilder {
                 OBJ_HELIX => {
                     // HELIX = full spline record + helix parameters.
                     let data = entities::read_spline(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -4331,7 +4346,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Helix(Box::new(e)));
                 }
                 OBJ_TEXT => {
-                    let data = entities::read_text(&mut reader, self.obj_reader.version());
+                    let data = entities::read_text(reader, self.obj_reader.version());
                     let mut e = Text::new();
                     e.common = entity_common;
                     e.value = data.value;
@@ -4369,16 +4384,16 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_MTEXT => {
                     let data = entities::read_mtext(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
-                    let e = mtext_from_data(data, entity_common, &maps);
+                    let e = mtext_from_data(data, entity_common, maps);
                     let _ = document.add_entity(EntityType::MText(Box::new(e)));
                 }
                 OBJ_LEADER => {
                     let data = entities::read_leader(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -4425,7 +4440,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Leader(e));
                 }
                 OBJ_TOLERANCE => {
-                    let data = entities::read_tolerance(&mut reader, self.obj_reader.version());
+                    let data = entities::read_tolerance(reader, self.obj_reader.version());
                     let mut e = Tolerance::new();
                     e.common = entity_common;
                     e.insertion_point = data.insertion_point;
@@ -4443,9 +4458,9 @@ impl DwgDocumentBuilder {
                 // ── Complex entities ───────────────────────────────
                 OBJ_HATCH | OBJ_MPOLYGON => {
                     let data = if type_code == OBJ_MPOLYGON {
-                        entities::read_mpolygon(&mut reader, self.obj_reader.version())
+                        entities::read_mpolygon(reader, self.obj_reader.version())
                     } else {
-                        entities::read_hatch(&mut reader, self.obj_reader.version())
+                        entities::read_hatch(reader, self.obj_reader.version())
                     };
                     let mut e = Hatch::new();
                     e.common = entity_common;
@@ -4525,7 +4540,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_VIEWPORT => {
                     let data = entities::read_viewport(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -4631,7 +4646,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::Viewport(Box::new(e)));
                 }
                 OBJ_POLYLINE_2D => {
-                    let data = entities::read_polyline2d(&mut reader, self.obj_reader.version());
+                    let data = entities::read_polyline2d(reader, self.obj_reader.version());
                     let mut e = Polyline2D::new();
                     e.common = entity_common;
                     e.flags = PolylineFlags::from_bits(data.flags as u16);
@@ -4642,12 +4657,12 @@ impl DwgDocumentBuilder {
                     e.start_width = data.start_width;
                     e.end_width = data.end_width;
                     let h = e.common.handle.value();
-                    let order = read_owned_vertex_handles(&mut reader, data.owned_count);
+                    let order = read_owned_vertex_handles(reader, data.owned_count);
                     pending.vertex_order.insert(h, order);
                     pending.polylines.push((h, EntityType::Polyline2D(e)));
                 }
                 OBJ_POLYLINE_3D => {
-                    let data = entities::read_polyline3d(&mut reader, self.obj_reader.version());
+                    let data = entities::read_polyline3d(reader, self.obj_reader.version());
                     let mut e = Polyline3D::new();
                     e.common = entity_common;
                     e.flags.closed = (data.closed_flag & 1) != 0;
@@ -4658,7 +4673,7 @@ impl DwgDocumentBuilder {
                     );
                     e.flags.spline_fit = data.smooth_type != 0;
                     let h = e.common.handle.value();
-                    let order = read_owned_vertex_handles(&mut reader, data.owned_count);
+                    let order = read_owned_vertex_handles(reader, data.owned_count);
                     pending.vertex_order.insert(h, order);
                     pending.polylines.push((h, EntityType::Polyline3D(e)));
                 }
@@ -4666,13 +4681,13 @@ impl DwgDocumentBuilder {
                 // ── Dimension types ────────────────────────────────
                 OBJ_DIMENSION_LINEAR => {
                     let data = entities::read_dimension_linear(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionLinear::new(data.first_point, data.second_point);
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.definition_point = data.definition_point;
                     dim.base.definition_point = data.definition_point;
                     dim.rotation = data.rotation;
@@ -4682,13 +4697,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_DIMENSION_ALIGNED => {
                     let data = entities::read_dimension_aligned(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionAligned::new(data.first_point, data.second_point);
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.definition_point = data.definition_point;
                     dim.base.definition_point = data.definition_point;
                     dim.ext_line_rotation = data.ext_line_rotation;
@@ -4697,13 +4712,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_DIMENSION_RADIUS => {
                     let data = entities::read_dimension_radius(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionRadius::new(data.angle_vertex, data.definition_point);
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.base.definition_point = data.definition_point;
                     dim.leader_length = data.leader_length;
                     let _ = document
@@ -4711,13 +4726,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_DIMENSION_DIAMETER => {
                     let data = entities::read_dimension_diameter(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionDiameter::new(data.angle_vertex, data.definition_point);
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.base.definition_point = data.definition_point;
                     dim.leader_length = data.leader_length;
                     let _ = document
@@ -4725,13 +4740,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_DIMENSION_ANG_2LN => {
                     let data = entities::read_dimension_angular_2ln(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionAngular2Ln::default();
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.dimension_arc =
                         crate::types::Vector3::new(data.dimension_arc.x, data.dimension_arc.y, 0.0);
                     dim.first_point = data.first_point;
@@ -4744,13 +4759,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_DIMENSION_ANG_3PT => {
                     let data = entities::read_dimension_angular_3pt(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionAngular3Pt::default();
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.first_point = data.first_point;
                     dim.second_point = data.second_point;
                     dim.angle_vertex = data.angle_vertex;
@@ -4761,7 +4776,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_DIMENSION_ORDINATE => {
                     let data = entities::read_dimension_ordinate(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -4771,7 +4786,7 @@ impl DwgDocumentBuilder {
                         data.is_ordinate_type_x,
                     );
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.definition_point = data.definition_point;
                     dim.base.definition_point = data.definition_point;
                     dim.refresh_measurement();
@@ -4780,13 +4795,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_ARC_DIMENSION => {
                     let data = entities::read_dimension_arc(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionArc::default();
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.definition_point = data.definition_point;
                     dim.base.definition_point = data.definition_point;
                     dim.first_extension_point = data.first_extension_point;
@@ -4803,13 +4818,13 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_LARGE_RADIAL_DIMENSION => {
                     let data = entities::read_dimension_large_radial(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
                     let mut dim = DimensionLargeRadial::default();
                     dim.base.common = entity_common;
-                    map_dimension_common(&mut dim.base, &data.common, &maps);
+                    map_dimension_common(&mut dim.base, &data.common, maps);
                     dim.definition_point = data.definition_point;
                     dim.base.definition_point = data.definition_point;
                     dim.chord_point = data.chord_point;
@@ -4821,7 +4836,7 @@ impl DwgDocumentBuilder {
                 }
 
                 OBJ_MLINE => {
-                    let data = entities::read_mline(&mut reader);
+                    let data = entities::read_mline(reader);
                     let mut e = MLine::new();
                     e.common = entity_common;
                     e.scale_factor = data.scale_factor;
@@ -4881,18 +4896,18 @@ impl DwgDocumentBuilder {
 
                 OBJ_POLYLINE_PFACE => {
                     let (_num_verts, _num_faces, owned_count) =
-                        entities::read_polyface_mesh(&mut reader, self.obj_reader.version());
+                        entities::read_polyface_mesh(reader, self.obj_reader.version());
                     let mut e = PolyfaceMesh::new();
                     e.common = entity_common;
                     let h = e.common.handle.value();
-                    let order = read_owned_vertex_handles(&mut reader, owned_count);
+                    let order = read_owned_vertex_handles(reader, owned_count);
                     pending.vertex_order.insert(h, order);
                     pending.polylines.push((h, EntityType::PolyfaceMesh(e)));
                 }
 
                 OBJ_MESH => {
                     let data =
-                        entities::read_mesh_with_budget(&mut reader, self.obj_reader.mesh_budget());
+                        entities::read_mesh_with_budget(reader, self.obj_reader.mesh_budget());
                     if data.faces_truncated {
                         let kept_faces = data.faces.len();
                         let kept_indices = data.faces.iter().map(Vec::len).sum::<usize>();
@@ -4934,7 +4949,7 @@ impl DwgDocumentBuilder {
 
                 OBJ_MULTILEADER => {
                     let data = entities::read_multileader(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -5011,7 +5026,7 @@ impl DwgDocumentBuilder {
                 // ── Attribute entities ─────────────────────────────
                 OBJ_ATTDEF => {
                     let data = entities::read_attribute_definition(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -5063,13 +5078,13 @@ impl DwgDocumentBuilder {
                     e.is_multiline = data.att_type > 1;
                     e.line_count = e.default_value.matches("\\P").count() as i16 + 1;
                     e.embedded_mtext = data.embedded_mtext.map(|mtext| {
-                        Box::new(mtext_from_data(mtext, EntityCommon::default(), &maps))
+                        Box::new(mtext_from_data(mtext, EntityCommon::default(), maps))
                     });
                     let _ = document.add_entity(EntityType::AttributeDefinition(e));
                 }
                 OBJ_ATTRIB => {
                     let data = entities::read_attribute_entity(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -5123,7 +5138,7 @@ impl DwgDocumentBuilder {
                     e.is_multiline = data.att_type > 1;
                     e.line_count = e.value.matches("\\P").count() as i16 + 1;
                     e.embedded_mtext = data.embedded_mtext.map(|mtext| {
-                        Box::new(mtext_from_data(mtext, EntityCommon::default(), &maps))
+                        Box::new(mtext_from_data(mtext, EntityCommon::default(), maps))
                     });
                     // Collect pending — will be attached to parent INSERT
                     // after Pass 2 (owner_handle = INSERT handle).
@@ -5155,7 +5170,7 @@ impl DwgDocumentBuilder {
                     // SEQEND terminates a polyline vertex or INSERT
                     // attribute sequence. Store the seqend handle so
                     // it can be preserved on the parent polyline.
-                    entities::read_seqend(&mut reader);
+                    entities::read_seqend(reader);
                     pending
                         .seqends
                         .insert(entity_data.owner_handle, entity_common.handle);
@@ -5167,7 +5182,7 @@ impl DwgDocumentBuilder {
                 // Collect vertex data and attach to parent polylines
                 // in the post-processing step after Pass 2.
                 OBJ_VERTEX_2D => {
-                    let mut data = entities::read_vertex2d(&mut reader, self.obj_reader.version());
+                    let mut data = entities::read_vertex2d(reader, self.obj_reader.version());
                     data.handle = entity_common.handle;
                     pending
                         .vertices
@@ -5176,7 +5191,7 @@ impl DwgDocumentBuilder {
                         .push(PendingVertex::V2D(data));
                 }
                 OBJ_VERTEX_3D | OBJ_VERTEX_MESH => {
-                    let mut data = entities::read_vertex3d(&mut reader);
+                    let mut data = entities::read_vertex3d(reader);
                     data.handle = entity_common.handle;
                     pending
                         .vertices
@@ -5185,7 +5200,7 @@ impl DwgDocumentBuilder {
                         .push(PendingVertex::V3D(data, entity_common));
                 }
                 OBJ_VERTEX_PFACE => {
-                    let mut data = entities::read_vertex3d(&mut reader);
+                    let mut data = entities::read_vertex3d(reader);
                     data.handle = entity_common.handle;
                     pending
                         .vertices
@@ -5194,7 +5209,7 @@ impl DwgDocumentBuilder {
                         .push(PendingVertex::V3D(data, entity_common));
                 }
                 OBJ_VERTEX_PFACE_FACE => {
-                    let mut data = entities::read_pface_face(&mut reader);
+                    let mut data = entities::read_pface_face(reader);
                     data.handle = entity_common.handle;
                     pending
                         .vertices
@@ -5213,7 +5228,7 @@ impl DwgDocumentBuilder {
                     } else {
                         UnderlayType::Pdf
                     };
-                    let data = entities::read_underlay(&mut reader);
+                    let data = entities::read_underlay(reader);
                     let mut e = Underlay::new(utype);
                     e.common = entity_common;
                     e.normal = data.normal;
@@ -5237,7 +5252,7 @@ impl DwgDocumentBuilder {
 
                 // ── Raster image / Wipeout ─────────────────────────
                 OBJ_IMAGE => {
-                    let data = entities::read_raster_image(&mut reader, self.obj_reader.version());
+                    let data = entities::read_raster_image(reader, self.obj_reader.version());
                     let mut e =
                         RasterImage::new("", data.insertion_point, data.size.x, data.size.y);
                     e.common = entity_common;
@@ -5281,7 +5296,7 @@ impl DwgDocumentBuilder {
                     let _ = document.add_entity(EntityType::RasterImage(e));
                 }
                 OBJ_WIPEOUT => {
-                    let data = entities::read_wipeout(&mut reader, self.obj_reader.version());
+                    let data = entities::read_wipeout(reader, self.obj_reader.version());
                     let mut e = Wipeout::new();
                     e.common = entity_common;
                     e.class_version = data.class_version;
@@ -5316,7 +5331,7 @@ impl DwgDocumentBuilder {
 
                 // ── OLE2 Frame ──────────────────────────────────────
                 OBJ_OLE2FRAME => {
-                    let data = entities::read_ole2frame(&mut reader, self.obj_reader.version());
+                    let data = entities::read_ole2frame(reader, self.obj_reader.version());
                     let mut e = Ole2Frame::new();
                     e.common = entity_common;
                     e.ole_object_type = OleObjectType::from_i16(data.object_type);
@@ -5337,7 +5352,7 @@ impl DwgDocumentBuilder {
                 // ── Polygon mesh (POLYLINE with mesh flag) ──────────
                 OBJ_POLYLINE_MESH => {
                     let (flags, smooth_type, m_count, n_count, m_smooth, n_smooth, owned_count) =
-                        entities::read_polygon_mesh(&mut reader, self.obj_reader.version());
+                        entities::read_polygon_mesh(reader, self.obj_reader.version());
                     let mut e = PolygonMeshEntity::new();
                     e.common = entity_common;
                     e.flags = PolygonMeshFlags::from_bits_truncate(flags);
@@ -5348,7 +5363,7 @@ impl DwgDocumentBuilder {
                     e.smooth_type = SurfaceSmoothType::from_i16(smooth_type);
                     // Vertices will be assembled from VERTEX_MESH records
                     let poly_handle = entity_data.common.handle;
-                    let order = read_owned_vertex_handles(&mut reader, owned_count);
+                    let order = read_owned_vertex_handles(reader, owned_count);
                     pending.vertex_order.insert(poly_handle, order);
                     pending
                         .polylines
@@ -5358,7 +5373,7 @@ impl DwgDocumentBuilder {
                 // ── ACIS entities (3DSOLID, REGION, BODY) ───────────
                 OBJ_3DSOLID => {
                     let data = entities::read_acis_entity(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                         entity_common.has_ds_data,
@@ -5408,7 +5423,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_REGION => {
                     let data = entities::read_acis_entity(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                         entity_common.has_ds_data,
@@ -5449,7 +5464,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_BODY => {
                     let data = entities::read_acis_entity(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                         entity_common.has_ds_data,
@@ -5513,7 +5528,7 @@ impl DwgDocumentBuilder {
                         _ => crate::entities::SurfaceKind::Generic,
                     };
                     let data = entities::read_surface(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                         entity_common.has_ds_data,
@@ -5561,7 +5576,7 @@ impl DwgDocumentBuilder {
                     match cpp_class {
                         "CAcLayoutPrintConfig" => {
                             let mut data = entities::read_layout_print_config(
-                                &mut reader,
+                                reader,
                             );
                             if let ExtendedEntityData::LayoutPrintConfig(value) = &mut data {
                                 value.raw_dwg_data = Some(reader.raw_merged_data());
@@ -5598,7 +5613,7 @@ impl DwgDocumentBuilder {
                         "AcDbBlockAngularConstraintParameterEntity" => {
                             if let Some(data) =
                                 crate::io::dwg::dwg_stream_readers::object_reader::dynamic_block::read_dynamic_block_data(
-                                    &mut reader,
+                                    reader,
                                     "BLOCKANGULARCONSTRAINTPARAMETERENTITY",
                                 )
                             {
@@ -5625,7 +5640,7 @@ impl DwgDocumentBuilder {
                                 .unwrap_or_else(|| name.to_string());
                             let (payload, object_ids) =
                                 read_registered_payload(
-                                    &mut reader,
+                                    reader,
                                     entity_common.handle.value(),
                                 );
                             let _ = document.add_entity(EntityType::Extended(
@@ -5682,8 +5697,8 @@ impl DwgDocumentBuilder {
                         // the class-specific data (common entity data already
                         // consumed), so the geometry reads cleanly from here.
                         "AcDbSectionSymbol" => {
-                            let mut e = decode_section_symbol(&mut reader)
-                                .unwrap_or_else(SectionSymbol::new);
+                            let mut e = decode_section_symbol(reader)
+                                .unwrap_or_default();
                             e.common = entity_common;
                             let _ = document.add_entity(EntityType::SectionSymbol(e));
                         }
@@ -5765,7 +5780,7 @@ impl DwgDocumentBuilder {
             // ── Non-graphical objects ──────────────────────────────
             let non_entity_data = self
                 .obj_reader
-                .read_common_non_entity_data(&mut reader, type_code);
+                .read_common_non_entity_data(reader, type_code);
             let owner_handle = Handle::from(non_entity_data.owner_handle);
             if non_entity_data.common.handle != handle {
                 reader.invalidate("DWG object handle disagrees with handle map");
@@ -5853,7 +5868,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_DICTIONARY => {
-                    let data = objects::read_dictionary(&mut reader, self.obj_reader.version());
+                    let data = objects::read_dictionary(reader, self.obj_reader.version());
                     let mut obj = crate::objects::Dictionary::new();
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -5868,7 +5883,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_DICTIONARYWDFLT => {
-                    let data = objects::read_dictionary_with_default(&mut reader);
+                    let data = objects::read_dictionary_with_default(reader);
                     let mut obj = crate::objects::DictionaryWithDefault::new();
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -5884,7 +5899,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_DICTIONARYVAR => {
-                    let data = objects::read_dictionary_variable(&mut reader);
+                    let data = objects::read_dictionary_variable(reader);
                     let mut obj = crate::objects::DictionaryVariable::new("", &data.value);
                     obj.handle = Handle::from(handle);
                     obj.owner_handle = owner_handle;
@@ -5895,7 +5910,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_LAYOUT => {
-                    let data = objects::read_layout(&mut reader, self.obj_reader.version());
+                    let data = objects::read_layout(reader, self.obj_reader.version());
                     let mut obj = crate::objects::Layout::new(&data.name);
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -5987,7 +6002,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_GROUP => {
-                    let data = objects::read_group(&mut reader);
+                    let data = objects::read_group(reader);
                     let mut obj = crate::objects::Group::new("");
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -6003,7 +6018,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_MLINESTYLE => {
                     let data = objects::read_mlinestyle(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -6066,7 +6081,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_XRECORD => {
-                    let data = objects::read_xrecord(&mut reader);
+                    let data = objects::read_xrecord(reader);
                     let mut obj = crate::objects::XRecord::new();
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -6095,7 +6110,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_PLOTSETTINGS => {
                     let data =
-                        objects::read_plot_settings_obj(&mut reader, self.obj_reader.version());
+                        objects::read_plot_settings_obj(reader, self.obj_reader.version());
                     let mut obj = crate::objects::PlotSettings::new(&data.page_name);
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -6164,7 +6179,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_MLEADERSTYLE => {
                     let data = objects::read_multileader_style(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -6250,7 +6265,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_IMAGEDEF => {
-                    let data = objects::read_image_definition(&mut reader);
+                    let data = objects::read_image_definition(reader);
                     let mut obj = crate::objects::ImageDefinition::new(&data.file_name);
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -6275,7 +6290,7 @@ impl DwgDocumentBuilder {
                     } else {
                         UnderlayType::Pdf
                     };
-                    let data = objects::read_underlay_definition(&mut reader);
+                    let data = objects::read_underlay_definition(reader);
                     let mut obj = crate::objects::UnderlayDefinition::new(utype);
                     obj.handle = Handle::from(handle);
                     obj.owner_handle = owner_handle;
@@ -6287,7 +6302,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_IMAGEDEFREACTOR => {
-                    let _data = objects::read_image_definition_reactor(&mut reader);
+                    let _data = objects::read_image_definition_reactor(reader);
                     document.objects.insert(
                         Handle::from(handle),
                         crate::objects::ObjectType::ImageDefinitionReactor(
@@ -6300,7 +6315,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_SCALE => {
-                    let data = objects::read_scale(&mut reader);
+                    let data = objects::read_scale(reader);
                     let mut obj = crate::objects::Scale::new(
                         &data.name,
                         data.paper_units,
@@ -6314,7 +6329,7 @@ impl DwgDocumentBuilder {
                         .insert(Handle::from(handle), crate::objects::ObjectType::Scale(obj));
                 }
                 OBJ_SORTENTSTABLE => {
-                    let data = objects::read_sort_entities_table(&mut reader);
+                    let data = objects::read_sort_entities_table(reader);
                     let mut obj = crate::objects::SortEntitiesTable::new();
                     obj.handle = Handle::from(handle);
                     obj.owner_handle = owner_handle;
@@ -6331,7 +6346,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_RASTERVARIABLES => {
-                    let data = objects::read_raster_variables(&mut reader);
+                    let data = objects::read_raster_variables(reader);
                     let obj = crate::objects::RasterVariables {
                         handle: Handle::from(handle),
                         owner: owner_handle,
@@ -6346,7 +6361,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_DBCOLOR => {
-                    let data = objects::read_book_color(&mut reader);
+                    let data = objects::read_book_color(reader);
                     let obj = crate::objects::BookColor {
                         handle: Handle::from(handle),
                         owner: owner_handle,
@@ -6360,7 +6375,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_PLACEHOLDER => {
-                    objects::read_placeholder(&mut reader);
+                    objects::read_placeholder(reader);
                     let obj = crate::objects::PlaceHolder {
                         handle: Handle::from(handle),
                         owner: owner_handle,
@@ -6371,7 +6386,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_WIPEOUTVARIABLES => {
-                    let data = objects::read_wipeout_variables(&mut reader);
+                    let data = objects::read_wipeout_variables(reader);
                     let obj = crate::objects::WipeoutVariables {
                         handle: Handle::from(handle),
                         owner: owner_handle,
@@ -6385,7 +6400,7 @@ impl DwgDocumentBuilder {
                 OBJ_VBA_PROJECT => {
                     if let Some(data) =
                         crate::io::dwg::dwg_stream_readers::object_reader::class_object::read_class_object_data(
-                            &mut reader,
+                            reader,
                             "VBA_PROJECT",
                             self.obj_reader.version(),
                             self.obj_reader.dxf_version(),
@@ -6559,7 +6574,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_VISUALSTYLE => {
                     let mut obj = objects::read_visual_style(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                         self.obj_reader.dxf_version(),
                     );
@@ -6581,7 +6596,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_MATERIAL => {
                     let mut obj =
-                        objects::read_material(&mut reader, self.obj_reader.version());
+                        objects::read_material(reader, self.obj_reader.version());
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
                     obj.reactors = non_entity_data
@@ -6609,7 +6624,7 @@ impl DwgDocumentBuilder {
                         merged_ranges,
                         style_handle,
                     ) = entities::read_table_content(
-                        &mut reader,
+                        reader,
                         self.obj_reader.version(),
                     );
                     let mut obj = crate::entities::Table::new(
@@ -6645,7 +6660,7 @@ impl DwgDocumentBuilder {
                 }
                 OBJ_TABLESTYLE => {
                     let mut obj =
-                        objects::read_table_style(&mut reader, self.obj_reader.version());
+                        objects::read_table_style(reader, self.obj_reader.version());
                     obj.handle = Handle::from(handle);
                     obj.owner_handle = owner_handle;
                     document.objects.insert(
@@ -6654,7 +6669,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_GEODATA => {
-                    let data = objects::read_geodata(&mut reader);
+                    let data = objects::read_geodata(reader);
                     let mut obj = crate::objects::GeoData::new();
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -6727,7 +6742,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_SPATIALFILTER => {
-                    let data = objects::read_spatial_filter(&mut reader);
+                    let data = objects::read_spatial_filter(reader);
                     let mut obj = crate::objects::SpatialFilter::new();
                     obj.handle = Handle::from(handle);
                     obj.owner = owner_handle;
@@ -6746,7 +6761,7 @@ impl DwgDocumentBuilder {
                     );
                 }
                 OBJ_BLOCKVISIBILITYPARAMETER => {
-                    let mut param = objects::read_block_visibility_parameter(&mut reader);
+                    let mut param = objects::read_block_visibility_parameter(reader);
                     param.handle = Handle::from(handle);
                     param.owner = owner_handle;
                     document
@@ -6796,7 +6811,7 @@ impl DwgDocumentBuilder {
                 OBJ_FIELD => {
                     let mut data =
                         crate::io::dwg::dwg_stream_readers::object_reader::field::read_field_object(
-                            &mut reader,
+                            reader,
                             self.obj_reader.version(),
                         );
                     data.handle = Handle::from(handle);
@@ -6819,7 +6834,7 @@ impl DwgDocumentBuilder {
                 OBJ_FIELDLIST => {
                     let mut data =
                         crate::io::dwg::dwg_stream_readers::object_reader::field::read_field_list(
-                            &mut reader,
+                            reader,
                         );
                     data.handle = Handle::from(handle);
                     data.owner = owner_handle;
@@ -6845,7 +6860,7 @@ impl DwgDocumentBuilder {
                         if crate::objects::is_associative_object_name(dxf_name) {
                             if let Some(data) =
                                 crate::io::dwg::dwg_stream_readers::object_reader::associative::read_associative_data(
-                                    &mut reader,
+                                    reader,
                                     dxf_name,
                                     self.obj_reader.version(),
                                     document.version,
@@ -6893,7 +6908,7 @@ impl DwgDocumentBuilder {
                         }
                         if let Some(data) =
                             crate::io::dwg::dwg_stream_readers::object_reader::data_objects::read_data_object_data(
-                                &mut reader,
+                                reader,
                                 dxf_name,
                             )
                         {
@@ -6920,7 +6935,7 @@ impl DwgDocumentBuilder {
                         }
                         if let Some(data) =
                             crate::io::dwg::dwg_stream_readers::object_reader::dynamic_block::read_dynamic_block_data(
-                                &mut reader,
+                                reader,
                                 dxf_name,
                             )
                         {
@@ -6959,7 +6974,7 @@ impl DwgDocumentBuilder {
                         {
                             if let Some(data) =
                                 crate::io::dwg::dwg_stream_readers::object_reader::dynamic_block::read_solid_history_data(
-                                    &mut reader,
+                                    reader,
                                     dxf_name,
                                     dwg_version,
                                     document.version,
@@ -7007,7 +7022,7 @@ impl DwgDocumentBuilder {
                             let h = Handle::from(handle);
                             let Some(data) =
                                 crate::io::dwg::dwg_stream_readers::object_reader::dgn_linestyle::read_dgn_line_style_data(
-                                    &mut reader,
+                                    reader,
                                     &class_name_upper,
                                 )
                             else {
@@ -7082,7 +7097,7 @@ impl DwgDocumentBuilder {
                                 | "MCDBCONTAINER2"
                         ) {
                             let (payload, object_ids) =
-                                read_registered_payload(&mut reader, handle);
+                                read_registered_payload(reader, handle);
                             document.objects.insert(
                                 Handle::from(handle),
                                 crate::objects::ObjectType::RegisteredClass(
@@ -7117,7 +7132,7 @@ impl DwgDocumentBuilder {
                         }
                         if let Some(data) =
                             crate::io::dwg::dwg_stream_readers::object_reader::class_object::read_class_object_data(
-                                &mut reader,
+                                reader,
                                 dxf_name,
                                 self.obj_reader.version(),
                                 self.obj_reader.dxf_version(),
@@ -7198,7 +7213,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7215,7 +7230,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7247,7 +7262,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7279,7 +7294,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7385,14 +7400,14 @@ impl DwgDocumentBuilder {
                                     // the branch above and never reach here.
                                     let has_file_to_extension_dictionary =
                                         read_oda_context_file_dictionary_flag(
-                                            &mut reader,
+                                            reader,
                                             self.obj_reader.version(),
                                         );
                                     let is_default = reader.read_bit();
                                     let scale = reader.read_handle();
                                     let context =
                                         entities::read_multileader_annotation_context(
-                                            &mut reader,
+                                            reader,
                                             self.obj_reader.version(),
                                             self.obj_reader.dxf_version(),
                                             true,
@@ -7418,7 +7433,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7462,7 +7477,7 @@ impl DwgDocumentBuilder {
                                         reader.read_bit_short();
                                     let embedded_has_file_to_extension_dictionary =
                                         read_context_file_dictionary_flag(
-                                            &mut reader,
+                                            reader,
                                             self.obj_reader.version(),
                                         );
                                     let embedded_is_default =
@@ -7603,7 +7618,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7638,7 +7653,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7668,7 +7683,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7676,7 +7691,7 @@ impl DwgDocumentBuilder {
                                 Some((
                                     crate::objects::ObjectContextKind::HatchScale(
                                         read_hatch_scale_context_data(
-                                            &mut reader,
+                                            reader,
                                             self.obj_reader.version(),
                                         ),
                                     ),
@@ -7690,12 +7705,12 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
                                 let hatch = read_hatch_scale_context_data(
-                                    &mut reader,
+                                    reader,
                                     self.obj_reader.version(),
                                 );
                                 let view_normal = crate::types::Vector3::new(
@@ -7732,7 +7747,7 @@ impl DwgDocumentBuilder {
                                 let class_version = reader.read_bit_short();
                                 let has_file_to_extension_dictionary =
                                     read_context_file_dictionary_flag(
-                                        &mut reader,
+                                        reader,
                                         self.obj_reader.version(),
                                     );
                                 let is_default = reader.read_bit();
@@ -7868,7 +7883,7 @@ impl DwgDocumentBuilder {
                             .obj_reader
                             .version()
                             .r2018_plus(self.obj_reader.dxf_version());
-                        if let Some(svs) = decode_section_view_style(&mut reader, r2018) {
+                        if let Some(svs) = decode_section_view_style(reader, r2018) {
                             document.section_view_style = Some(svs);
                         }
                     }
@@ -8576,10 +8591,7 @@ fn anonymous_block_names(entries: &[u64], names: &HashMap<u64, String>) -> HashM
         .iter()
         .filter_map(|handle| names.get(handle).map(|name| (handle, name)))
         .enumerate()
-        .filter_map(|(ordinal, (handle, name))| {
-            (name.len() == 2 && name.starts_with('*'))
-                .then(|| (*handle, format!("{name}{ordinal}")))
-        })
+        .filter(|&(_ordinal, (_handle, name))| name.len() == 2 && name.starts_with('*')).map(|(ordinal, (handle, name))| (*handle, format!("{name}{ordinal}")))
         .collect()
 }
 
@@ -9109,9 +9121,10 @@ mod retained_dimstyle_tests {
     use crate::CadDocument;
     use std::io::Cursor;
 
-    /// A file without a "Standard" dimension style (AutoCAD's VW252-03-1200 sample) keeps the reader's default
+    /// A file without a "Standard" dimension style (AutoCAD's VW252-03-1200 sample) kept the reader's default
     /// one, whose DIMTXSTY held the default text style's handle: a linetype in that file, which progeCAD's AUDIT
-    /// reports. It must point at one of the file's text styles.
+    /// reported. Since HND-02 that default is not kept when the file's current style is its own, but any one
+    /// read must still point at one of the file's text styles.
     #[test]
     fn retained_default_dimstyle_points_at_a_source_text_style() {
         let mut doc = CadDocument::new();
@@ -9131,6 +9144,51 @@ mod retained_dimstyle_tests {
         let styles: Vec<Handle> = read.text_styles.iter().map(|t| t.handle).collect();
         for d in read.dim_styles.iter() {
             assert!(styles.contains(&d.dimtxsty_handle), "{} -> {:?}", d.name, d.dimtxsty_handle);
+        }
+    }
+
+    fn dwg_round_trip(doc: &CadDocument) -> CadDocument {
+        DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(doc).unwrap())).read().unwrap()
+    }
+
+    /// HND-02: a file without the "Standard" dimension style nor the AcadAnnotative, AcCmTransparency and
+    /// AcAecLayerStandard application ids (VW252-03-1200) does not gain them when read, so saving it takes no
+    /// handle beyond its HANDSEED (where AutoCAD creates what it adds on opening); an annotative style, a
+    /// transparent layer or a layer description set afterwards still gets its application id when saved, in DWG
+    /// and DXF.
+    #[test]
+    fn optional_defaults_are_not_added_to_a_file_without_them() {
+        use crate::types::{DxfVersion, Transparency};
+        for version in [DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1032] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            let _ = doc.dim_styles.remove("Standard");
+            let mut iso = DimStyle::new("ISO-25");
+            iso.handle = doc.allocate_handle();
+            iso.dimtxsty_handle = doc.header.current_text_style_handle;
+            doc.header.current_dimstyle_handle = iso.handle;
+            doc.dim_styles.add(iso).unwrap();
+            let _ = doc.app_ids.remove("AcadAnnotative");
+            let _ = doc.app_ids.remove("AcCmTransparency");
+            let _ = doc.app_ids.remove("AcAecLayerStandard");
+            let read = dwg_round_trip(&doc);
+            assert!(!read.dim_styles.contains("Standard"), "{version:?}");
+            for app in ["AcadAnnotative", "AcCmTransparency", "AcAecLayerStandard"] {
+                assert!(!read.app_ids.contains(app), "{app} {version:?}");
+            }
+            assert_eq!(dwg_round_trip(&read).header.handle_seed, read.header.handle_seed, "{version:?}");
+
+            let mut edited = read;
+            edited.text_styles.get_mut("Standard").unwrap().annotative = true;
+            edited.layers.get_mut("0").unwrap().transparency = Transparency::from_percent(40.0);
+            edited.layers.get_mut("0").unwrap().description = "Planta baja".into();
+            let dxf = crate::DxfWriter::new(&edited).write_to_vec().unwrap();
+            let dxf = crate::DxfReader::from_reader(Cursor::new(dxf)).unwrap().read().unwrap();
+            for saved in [dwg_round_trip(&edited), dxf] {
+                assert!(saved.text_styles.get("Standard").unwrap().annotative, "{version:?}");
+                assert_eq!(saved.layers.get("0").unwrap().transparency, Transparency::from_percent(40.0), "{version:?}");
+                assert_eq!(saved.layers.get("0").unwrap().description, "Planta baja", "{version:?}");
+            }
         }
     }
 }
