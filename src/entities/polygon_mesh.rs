@@ -1,7 +1,7 @@
 //! PolygonMesh entity — 3D polygon mesh (DXF POLYLINE with flag bit 16)
 
 use super::{Entity, EntityCommon};
-use crate::types::{BoundingBox3D, Transform, Vector3};
+use crate::types::{BoundingBox3D, Handle, Transform, Vector3};
 
 /// Smooth surface type for polygon meshes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +114,9 @@ pub struct PolygonMesh {
     pub normal: Vector3,
     /// Mesh vertices (M × N grid)
     pub vertices: Vec<PolygonMeshVertex>,
+    /// SEQEND handle read from the file, kept so the drawing keeps its handles (None: the writer allocates one).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub seqend_handle: Option<Handle>,
 }
 
 impl PolygonMesh {
@@ -130,6 +133,7 @@ impl PolygonMesh {
             elevation: 0.0,
             normal: Vector3::UNIT_Z,
             vertices: Vec::new(),
+            seqend_handle: None,
         }
     }
 

@@ -1453,7 +1453,7 @@ impl<R: Read + Seek> DwgReader<R> {
                         if info.objects_base_offset != 0 {
                             let base = info.objects_base_offset;
                             for offset in hm.values_mut() {
-                                *offset -= base;
+                                *offset = offset.saturating_sub(base);
                             }
                         }
                         hm
@@ -2042,7 +2042,7 @@ impl<R: Read + Seek> DwgReader<R> {
                     names::AUX_HEADER,
                 ] {
                     if let Some(&(_, size)) = info.section_locators.get(sect) {
-                        offset += size;
+                        offset = offset.saturating_add(size);
                     }
                 }
                 aux_header_end = offset;
@@ -2504,7 +2504,13 @@ impl<R: Read + Seek> DwgReader<R> {
             let ind = id.unsigned_abs();
 
             info.page_records.insert(ind as i32, (offset, size));
-            offset += size;
+            // Sizes come from the file: a negative or overflowing one is a damaged page map, not a panic.
+            offset = u64::try_from(size)
+                .ok()
+                .and_then(|_| offset.checked_add(size))
+                .ok_or_else(|| {
+                    DxfError::InvalidFormat(format!("AC1021: invalid page size {size} in page map"))
+                })?;
         }
 
         self.notifications.notify(
@@ -3622,7 +3628,7 @@ pub(crate) fn recover_roundtrip_gradients(document: &mut crate::document::CadDoc
                 // garbage bytes ("ACAD_XREC_ROUNDTRIP\x03q0…"), so match by
                 // prefix rather than equality.
                 if let Some((_, xrec_h)) = d.entries.iter().find(|(k, _)| {
-                    k.len() >= 19 && k[..19].eq_ignore_ascii_case("ACAD_XREC_ROUNDTRIP")
+                    k.get(..19).is_some_and(|p| p.eq_ignore_ascii_case("ACAD_XREC_ROUNDTRIP"))
                 }) {
                     has_roundtrip = true;
                     if let Some(ObjectType::XRecord(xr)) = document.objects.get(xrec_h) {
@@ -3914,5 +3920,49 @@ fn current_style_names(doc: &mut crate::document::CadDocument) {
     let h = doc.header.current_dimstyle_handle;
     if let Some(s) = doc.dim_styles.iter().find(|s| !h.is_null() && s.handle == h) {
         doc.header.current_dimstyle_name = s.name.clone();
+    }
+}
+
+#[cfg(test)]
+mod damaged_file_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Damaged DWGs found by lince's fuzzer (`src/robustez.rs`): before the fix they panicked with an arithmetic
+    /// overflow (page size of an AC1021 page map; modular char of more than 64 bits in an AC1015 handle map). The
+    /// reader turns its own panics into errors, so they are counted with a panic hook limited to this test's thread:
+    /// reading or recovering them must return, Ok or Err, without any panic.
+    #[test]
+    fn damaged_files_do_not_panic() {
+        const THREAD: &str = "acadrust-damaged-files";
+        let panics = Arc::new(AtomicUsize::new(0));
+        let previous: Arc<dyn Fn(&std::panic::PanicHookInfo) + Send + Sync> = Arc::from(std::panic::take_hook());
+        let (count, other) = (panics.clone(), previous.clone());
+        std::panic::set_hook(Box::new(move |info| {
+            if std::thread::current().name() == Some(THREAD) {
+                eprintln!("panic: {info}");
+                count.fetch_add(1, Ordering::SeqCst);
+            } else {
+                other(info)
+            }
+        }));
+        let files: [&[u8]; 2] = [
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/damaged/ac1021_page_map_size.dwg")),
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/damaged/ac1015_handle_map_mc.dwg")),
+        ];
+        // With and without the decompression budget that lince applies (it changes how far the reader gets).
+        let options = [super::DwgReadOptions::default(), super::DwgReadOptions::default().with_max_decompressed_bytes(512 << 20)];
+        let reader = std::thread::Builder::new().name(THREAD.into()).spawn(move || {
+            for bytes in files {
+                for o in &options {
+                    let _ = super::DwgReader::from_stream_with_options(std::io::Cursor::new(bytes), o.clone()).read();
+                    let _ = super::DwgReader::from_stream_with_options(std::io::Cursor::new(bytes), o.clone()).recover();
+                }
+            }
+        });
+        let joined = reader.map(|h| h.join());
+        std::panic::set_hook(Box::new(move |info| previous(info)));
+        assert!(matches!(joined, Ok(Ok(()))));
+        assert_eq!(panics.load(Ordering::SeqCst), 0);
     }
 }

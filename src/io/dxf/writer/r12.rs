@@ -122,7 +122,8 @@ fn is_model_space(name: &str) -> bool {
 }
 
 fn is_paper_space(name: &str) -> bool {
-    name.len() >= 12 && name[..12].eq_ignore_ascii_case("*Paper_Space")
+    // `get`: a name from a damaged file can have a multibyte character across byte 12.
+    name.get(..12).is_some_and(|p| p.eq_ignore_ascii_case("*Paper_Space"))
 }
 
 fn degrees(radians: f64) -> f64 {
@@ -1852,5 +1853,13 @@ mod tests {
         assert_eq!(m.add("Ä/Ö"), "___");
         let long = "x".repeat(40);
         assert_eq!(m.add(&long).len(), 31);
+    }
+
+    /// A block name read from a damaged file with a multibyte character across byte 12 panicked when slicing.
+    #[test]
+    fn paper_space_check_does_not_split_characters() {
+        assert!(super::is_paper_space("*Paper_Space7"));
+        assert!(!super::is_paper_space("*Paper_Spac\u{cc}x"));
+        assert!(!super::is_paper_space("*Model"));
     }
 }

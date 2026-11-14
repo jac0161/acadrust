@@ -341,7 +341,7 @@ impl VisualStyle {
         entries: &[crate::objects::XRecordEntry],
     ) -> bool {
         use crate::objects::XRecordValue;
-        if self.properties.len() != 24 {
+        if !matches!(self.properties.len(), 24 | 28) {
             return false;
         }
         let mut properties = self.core_properties();
@@ -434,9 +434,12 @@ impl VisualStyle {
 pub(crate) fn store_visual_style_roundtrip(document: &mut crate::document::CadDocument) {
     use crate::objects::{ObjectType, XRecordEntry, XRecordValue};
     use crate::types::DxfVersion;
-    if !(DxfVersion::AC1018..DxfVersion::AC1024).contains(&document.version) {
+    // AutoCAD keeps the R2013+ properties in this record when it saves 2004 to 2010.
+    if !(DxfVersion::AC1018..DxfVersion::AC1027).contains(&document.version) {
         return;
     }
+    // 2010 already stores the 28 core properties and their flags; 2004/2007 also need the flags.
+    let property_flags = document.version < DxfVersion::AC1024;
     let mut styles: Vec<_> = document
         .objects
         .iter()
@@ -511,7 +514,7 @@ pub(crate) fn store_visual_style_roundtrip(document: &mut crate::document::CadDo
             });
         }
         // One flag per property id; the ids after the 58 properties are on.
-        for index in 0..63 {
+        for index in (0..63).filter(|_| property_flags) {
             group.push(key(format!("RTVSPropertyOp{index}")));
             group.push(XRecordEntry {
                 code: 70,
@@ -551,7 +554,7 @@ pub(crate) fn restore_visual_style_roundtrip(document: &mut crate::document::Cad
             let ObjectType::VisualStyle(style) = object else {
                 return None;
             };
-            if style.properties.len() != 24 {
+            if !matches!(style.properties.len(), 24 | 28) {
                 return None;
             }
             let Some(ObjectType::Dictionary(dictionary)) =
@@ -1183,3 +1186,49 @@ macro_rules! impl_stub_object {
 
 impl_stub_object!(GeoData);
 impl_stub_object!(PlaceHolder);
+
+#[cfg(test)]
+mod visual_style_roundtrip_tests {
+    use super::{VisualStyle, VisualStylePropertyValue};
+    use crate::io::dwg::{DwgReader, DwgWriter};
+    use crate::objects::{DictionaryCloningFlags, ObjectType};
+    use crate::types::DxfVersion;
+    use crate::CadDocument;
+    use std::io::Cursor;
+
+    /// VS-01: a DWG 2018 visual style saved as 2004, 2007 or 2010 keeps its R2013+ properties in an
+    /// ACAD_XREC_ROUNDTRIP record laid out as AutoCAD 2027 writes it: the dictionary as reactor, merge
+    /// style 1 and, in 2010, without the RTVSPropertyOp flags the 2010 object already holds.
+    #[test]
+    fn modern_properties_roundtrip_record_as_autocad() {
+        for (version, entries) in [(DxfVersion::AC1018, 252), (DxfVersion::AC1021, 252), (DxfVersion::AC1024, 126)] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            let dictionary = doc.header.acad_visualstyle_dict_handle;
+            let handle = doc.allocate_handle();
+            let mut style = VisualStyle::new();
+            (style.handle, style.owner, style.description) = (handle, dictionary, "Sketchy".into());
+            style.properties = style.core_properties();
+            style.properties.extend(style.extended_properties());
+            style.properties[37].value = VisualStylePropertyValue::Long(7);
+            doc.objects.insert(handle, ObjectType::VisualStyle(Box::new(style)));
+            if let Some(ObjectType::Dictionary(d)) = doc.objects.get_mut(&dictionary) {
+                d.add_entry("Sketchy", handle);
+            }
+            let bytes = DwgWriter::write_to_vec(&doc).unwrap();
+            let read = DwgReader::from_stream(Cursor::new(bytes)).read().unwrap();
+            let Some(ObjectType::VisualStyle(style)) = read.objects.get(&handle) else {
+                panic!("{version:?}: visual style lost");
+            };
+            assert_eq!(style.properties.len(), 58, "{version:?}");
+            assert_eq!(style.properties[37].value, VisualStylePropertyValue::Long(7), "{version:?}");
+            let xdict = style.xdictionary_handle.expect("no extension dictionary");
+            let Some(ObjectType::Dictionary(d)) = read.objects.get(&xdict) else { panic!("{version:?}") };
+            let record = d.get("ACAD_XREC_ROUNDTRIP").expect("no roundtrip record");
+            let Some(ObjectType::XRecord(record)) = read.objects.get(&record) else { panic!("{version:?}") };
+            assert_eq!(record.reactors, [xdict], "{version:?}");
+            assert_eq!(record.cloning_flags, DictionaryCloningFlags::KeepExisting, "{version:?}");
+            assert_eq!(record.entries.len(), entries, "{version:?}");
+        }
+    }
+}

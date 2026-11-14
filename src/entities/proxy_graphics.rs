@@ -41,6 +41,17 @@ pub struct ProxyUnicodeText {
     pub text: String,
 }
 
+impl ProxyGraphicRecord {
+    /// The metafile record type code.
+    pub fn record_type(&self) -> u32 {
+        match self {
+            Self::FillOff => 21,
+            Self::UnicodeText(_) => 36,
+            Self::Unknown { record_type, .. } => *record_type,
+        }
+    }
+}
+
 impl ProxyGraphics {
     /// Decode a complete proxy-graphics metafile.
     pub fn decode(data: &[u8]) -> Option<Self> {

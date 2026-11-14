@@ -75,6 +75,15 @@ pub(crate) fn recompose(doc: &mut CadDocument) {
         for attribute in &mut joined.attributes {
             attribute.common.owner_handle = handle;
             attribute.common.raw_record = None;
+            // In DXF the decomposed ATTRIBs sit on a per-scale layer ("0 @ 1",
+            // marked AcadAnnotativeDecomposition) that AutoCAD drops on open:
+            // back to the real layer, or AUDIT reports an erased layer.
+            if let Some((real, _)) = attribute.common.layer.split_once(" @ ") {
+                if let Some(layer) = doc.layers.get(real) {
+                    attribute.common.layer_handle = attribute.common.layer_handle.map(|_| layer.handle);
+                    attribute.common.layer = real.to_string();
+                }
+            }
         }
         let block = joined.block_name.clone();
         restore_annotative(doc, &block, &mut joined.attributes);
@@ -192,6 +201,29 @@ mod tests {
         let Some(crate::objects::ObjectType::ObjectContextData(c)) = doc.objects.get(&s.entries[0].1) else { panic!() };
         let crate::objects::ObjectContextKind::MTextAttribute(k) = &c.kind else { panic!() };
         assert_eq!((k.insertion.x, k.insertion.y), (105.0, -10.0));
+        assert!(!doc.block_records.iter().any(|b| b.flags.anonymous && b.name.starts_with("*U")));
+    }
+
+    /// The same kind of drawing saved by AutoCAD 2027 as DXF 2000 (two
+    /// INSERTs of BLQ): the DXF reader recomposes it too.
+    #[test]
+    fn autocad_dxf_2000_annotative_attributes_are_recomposed() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/annotative/autocad_2027_r2000_attributes.dxf");
+        let doc = crate::io::dxf::DxfReader::from_file(path).unwrap().read().unwrap();
+        let inserts: Vec<_> = doc
+            .entities()
+            .filter_map(|e| match e {
+                EntityType::Insert(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+        assert!(!inserts.is_empty());
+        for i in inserts {
+            assert_eq!(i.block_name, "BLQ");
+            assert!(i.common.extended_data.get_record(super::APP).is_none());
+            assert!(i.attributes.iter().any(|a| a.tag == "TAGAN" && a.value == "ValorAN"));
+            assert!(i.attributes.iter().all(|a| a.common.layer == "0"));
+        }
         assert!(!doc.block_records.iter().any(|b| b.flags.anonymous && b.name.starts_with("*U")));
     }
 }

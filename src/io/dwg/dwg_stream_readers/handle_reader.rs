@@ -98,11 +98,12 @@ fn read_mc(data: &[u8]) -> (u64, usize) {
         }
         let b = data[i];
         i += 1;
-        value |= ((b & 0x7F) as u64) << shift;
+        // Bits past 64 (only in a damaged file) are dropped instead of overflowing the shift.
+        value |= ((b & 0x7F) as u64).checked_shl(shift).unwrap_or(0);
         if (b & 0x80) == 0 {
             break;
         }
-        shift += 7;
+        shift = shift.saturating_add(7);
     }
 
     (value, i)
@@ -126,17 +127,17 @@ fn read_smc(data: &[u8]) -> (i64, usize) {
 
         if (b & 0x80) == 0 {
             // Final byte: bits 0-5 = value, bit 6 = sign
-            value |= ((b & 0x3F) as u64) << shift;
+            value |= ((b & 0x3F) as u64).checked_shl(shift).unwrap_or(0);
             break;
         } else {
-            value |= ((b & 0x7F) as u64) << shift;
-            shift += 7;
+            value |= ((b & 0x7F) as u64).checked_shl(shift).unwrap_or(0);
+            shift = shift.saturating_add(7);
         }
     }
 
     let signed_value = value as i64;
     if (last_byte & 0x40) != 0 {
-        (-signed_value, i)
+        (signed_value.wrapping_neg(), i)
     } else {
         (signed_value, i)
     }
@@ -163,6 +164,14 @@ mod tests {
         let (val, len) = read_mc(&[0xC8, 0x01]);
         assert_eq!(val, 200);
         assert_eq!(len, 2);
+    }
+
+    /// A damaged handle map can chain more continuation bytes than fit in 64 bits: the extra bits are dropped.
+    #[test]
+    fn modular_chars_longer_than_64_bits_do_not_overflow() {
+        assert_eq!(read_mc(&[0xFF; 12]), (u64::MAX, 12));
+        assert_eq!(read_smc(&[0xFF; 12]).1, 12);
+        assert_eq!(read_smc(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x41]).1, 10);
     }
 
     #[test]

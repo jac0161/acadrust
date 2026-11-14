@@ -44,6 +44,7 @@ pub mod polyface_mesh;
 pub mod polygon_mesh;
 pub mod polyline;
 pub mod polyline3d;
+pub mod proxy_draw;
 pub mod proxy_graphics;
 pub mod raster_image;
 pub mod ray;
@@ -121,6 +122,7 @@ pub use polyline::{
     Polyline, Polyline2D, PolylineFlags, SmoothSurfaceType, Vertex2D, Vertex3D, VertexFlags,
 };
 pub use polyline3d::{Polyline3D, Polyline3DFlags, Vertex3DPolyline};
+pub use proxy_draw::ProxyDrawContext;
 pub use proxy_graphics::{ProxyGraphicRecord, ProxyGraphics, ProxyUnicodeText};
 pub use raster_image::{
     ClipBoundary, ClipMode, ClipType, ImageDefinition, ImageDisplayFlags, ImageDisplayQuality,

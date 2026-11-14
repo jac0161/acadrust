@@ -4614,6 +4614,10 @@ impl CadDocument {
         let mut record = crate::objects::XRecord::named(key);
         record.handle = record_handle;
         record.owner = dictionary_handle;
+        // As AutoCAD writes it: the owning dictionary as reactor and merge style 1. Without them the ODA
+        // engine (progeCAD) audits a DWG 2007 record as an invalid dictionary entry and removes it.
+        record.reactors = vec![dictionary_handle];
+        record.cloning_flags = crate::objects::DictionaryCloningFlags::KeepExisting;
         self.objects
             .insert(record_handle, ObjectType::XRecord(Box::new(record)));
         if let Some(ObjectType::Dictionary(dictionary)) = self.objects.get_mut(&dictionary_handle) {

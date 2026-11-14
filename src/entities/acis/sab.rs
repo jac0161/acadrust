@@ -100,9 +100,33 @@ impl SabWriter {
         // Header
         Self::write_header(&mut buf, &doc.header);
 
-        // Entity records
+        // Entity records. lince (SOL-01): a pre-7.0 body (as read from an
+        // R13-R2000 drawing) is written in its own layout: no subtype id, no
+        // synthetic sentinel, no edge parameters. Written in the 7.0 layout
+        // under a 400 header, AutoCAD rejects the drawing (ErrorStatus=53).
+        let legacy = doc.header.version.major < 7;
         for record in &doc.records {
-            Self::write_record(&mut buf, record);
+            let legacy_record;
+            let record = if legacy {
+                let mut r = record.clone();
+                // lince (SOL-02): SAT text has no numeric types; a spline record
+                // gets the tag of each field from its 4.0 grammar (whole numbers
+                // written as integers where AutoCAD reads doubles made it reject
+                // the drawing).
+                let typed = super::legacy_splines::is_spline(record)
+                    .then(|| super::legacy_splines::to_v400(record, false, true))
+                    .flatten();
+                let tokens = typed.as_ref().unwrap_or(&record.tokens);
+                r.tokens = (tokens.iter().enumerate())
+                    .filter(|(i, _)| !super::writer::legacy_v400_skips(&record.entity_type, *i))
+                    .map(|(_, t)| t.clone())
+                    .collect();
+                legacy_record = r;
+                &legacy_record
+            } else {
+                record
+            };
+            Self::write_record(&mut buf, record, legacy);
         }
 
         // End marker, with no end-of-record tag, written as tagged components
@@ -168,7 +192,7 @@ impl SabWriter {
         }
     }
 
-    fn write_record(buf: &mut Vec<u8>, record: &SatRecord) {
+    fn write_record(buf: &mut Vec<u8>, record: &SatRecord, legacy: bool) {
         // Entity type — may be compound with multiple hyphens.
         // In SAB, each level of the class hierarchy is a separate tag:
         //   "plane-surface"               → 0x0E("plane") + 0x0D("surface")
@@ -191,8 +215,10 @@ impl SabWriter {
         // Attribute pointer
         Self::write_pointer(buf, record.attribute.0);
 
-        // Subtype ID (plain integer, not pointer)
-        Self::write_integer(buf, record.subtype_id);
+        // Subtype ID (plain integer, not pointer); ACIS 7.0+ only.
+        if !legacy {
+            Self::write_integer(buf, record.subtype_id);
+        }
 
         if record.entity_type == "transform"
             && !record
@@ -488,10 +514,12 @@ impl SabWriter {
             return;
         }
         match name {
-            "full" | "open" | "none" | "closed" | "periodic" | "UNEXTENDED" => {
+            // Singularity of a spline surface's u/v boundary: low 1, high 2, both 3 (as AutoCAD writes a pole).
+            "full" | "open" | "none" | "closed" | "periodic" | "UNEXTENDED" | "low" | "high" | "both" => {
                 let value: i32 = match name {
-                    "closed" => 1,
-                    "periodic" => 2,
+                    "closed" | "low" => 1,
+                    "periodic" | "high" => 2,
+                    "both" => 3,
                     _ => 0,
                 };
                 buf.push(tags::ENUM);
@@ -1058,7 +1086,8 @@ impl SabReader {
         while pos < data.len() {
             let tag = data[pos];
             if tag == tags::ENTITY_TYPE || tag == tags::SUBTYPE {
-                let (record, new_pos) = Self::read_record(data, pos, record_index)?;
+                let (record, new_pos) =
+                    Self::read_record(data, pos, record_index, version.major < 7)?;
 
                 // Check for ACIS/ASM end marker — consume it so the
                 // reported length covers the full payload.
@@ -1100,6 +1129,14 @@ impl SabReader {
             convert_sab_booleans(&record.entity_type, &mut record.tokens);
             name_curve_enums(&mut record.tokens);
             name_spline_keywords(&record.entity_type, &mut record.tokens);
+            // lince (SOL-02): the passes above name the enumerations in the
+            // ShapeManager order; a 4.0 spline record gets its keywords from
+            // its own grammar.
+            if version.major < 7 && super::legacy_splines::is_spline(record) {
+                if let Some(tokens) = super::legacy_splines::to_v400(record, false, false) {
+                    record.tokens = tokens;
+                }
+            }
         }
 
         Ok((SatDocument { header, records }, pos))
@@ -1109,6 +1146,7 @@ impl SabReader {
         data: &[u8],
         mut pos: usize,
         index: i32,
+        legacy: bool,
     ) -> Result<(SatRecord, usize), SabError> {
         // Read entity type — may have multiple subtype prefixes.
         // In SAB, compound types like "fmesh-eye-attrib" are encoded as:
@@ -1176,8 +1214,9 @@ impl SabReader {
             SatPointer::NULL
         };
 
-        // Subtype ID (plain integer)
-        let subtype_id = if pos < data.len() && data[pos] == tags::INTEGER {
+        // Subtype ID (plain integer). lince (SOL-02): ACIS 7.0+ only; in a
+        // 4.0 body an integer here is the record's first field (a `pcurve`).
+        let subtype_id = if !legacy && pos < data.len() && data[pos] == tags::INTEGER {
             pos += 1;
             read_i32(data, &mut pos)?
         } else {
@@ -1450,12 +1489,21 @@ fn name_spline_keywords(entity_type: &str, tokens: &mut [SatToken]) {
         let value = data
             .get(..4)
             .map(|bytes| i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
-        let name = match (block.as_str(), *role, value) {
+        // ShapeManager names the subtypes exact_spl_sur / exp_par_cur (ASM 22300 SAB, as AutoCAD 2027 writes them).
+        let block = match block.as_str() {
+            "exact_spl_sur" => "exactsur",
+            "exp_par_cur" => "exppc",
+            b => b,
+        };
+        let name = match (block, *role, value) {
             ("exactsur", 0, Some(0)) => Some("full"),
             ("exactsur", 1..=2, Some(0)) | ("exppc", 1, Some(0)) => Some("open"),
             ("exactsur", 1..=2, Some(1)) | ("exppc", 1, Some(1)) => Some("closed"),
             ("exactsur", 1..=2, Some(2)) | ("exppc", 1, Some(2)) => Some("periodic"),
             ("exactsur", 3..=4, Some(0)) => Some("none"),
+            ("exactsur", 3..=4, Some(1)) => Some("low"),
+            ("exactsur", 3..=4, Some(2)) => Some("high"),
+            ("exactsur", 3..=4, Some(3)) => Some("both"),
             _ => None,
         };
         if let Some(name) = name {
@@ -1781,6 +1829,21 @@ fn read_tagged_double(data: &[u8], pos: &mut usize) -> Result<f64, SabError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// lince (SOL-01): a 400 body (as read from an R2000 drawing) goes out in
+    /// the 400 SAB layout: no subtype id, no synthetic sentinel, no edge
+    /// parameters. In the 7.0 layout AutoCAD rejected the drawing.
+    #[test]
+    fn legacy_v400_sab_keeps_the_400_layout() {
+        let doc = super::super::primitives::build_box([0.0; 3], 10.0, 20.0, 30.0).to_legacy_v400();
+        let sab = SabWriter::write(&doc);
+        let back = SabReader::read(&sab).unwrap();
+        assert_eq!(back.to_sat_string(), doc.to_sat_string());
+        // First record: `body` type tag, attribute pointer, then a pointer (no INTEGER id).
+        let at = sab.windows(5).position(|w| w == [tags::ENTITY_TYPE, 4, b'b', b'o', b'd']).unwrap();
+        assert_eq!(sab[at + 6], tags::POINTER);
+        assert_eq!(sab[at + 11], tags::POINTER, "no subtype id after the attribute");
+    }
 
     #[test]
     fn asm_flags_preserve_the_history_bit() {
@@ -2170,6 +2233,38 @@ mod tests {
                 };
                 assert_eq!(solid.acis_data.sab_data, expected, "DWG {version:?}");
             }
+        }
+    }
+
+    /// lince (SOL-01): a 400 SAT (a solid read from an R2000 drawing) stays SAT
+    /// text inline in DWG 2004-2010 and becomes a 400-layout SAB in the AcDs
+    /// section of 2013+; both come back as the same body.
+    #[test]
+    fn legacy_sat_survives_every_dwg_version() {
+        let sat = super::super::primitives::build_box([0.0; 3], 10.0, 20.0, 30.0)
+            .to_legacy_v400()
+            .to_sat_string();
+        for version in [
+            crate::DxfVersion::AC1015,
+            crate::DxfVersion::AC1018,
+            crate::DxfVersion::AC1021,
+            crate::DxfVersion::AC1024,
+            crate::DxfVersion::AC1027,
+            crate::DxfVersion::AC1032,
+        ] {
+            let mut drawing = crate::CadDocument::with_version(version);
+            let solid = crate::entities::Solid3D::from_sat(&sat);
+            drawing.add_entity(crate::EntityType::Solid3D(solid)).unwrap();
+            let bytes = crate::DwgWriter::write_to_vec(&drawing).unwrap();
+            let read = crate::DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+            let crate::EntityType::Solid3D(solid) = read.entities().next().unwrap() else {
+                panic!("missing solid");
+            };
+            let inline = version < crate::DxfVersion::AC1027;
+            assert_eq!(solid.acis_data.is_binary, !inline, "DWG {version:?}");
+            let back = solid.acis_data.parse().unwrap();
+            assert_eq!(back.header.version.major, 4, "DWG {version:?}");
+            assert_eq!(back.records.iter().filter(|r| r.entity_type == "face").count(), 6, "DWG {version:?}");
         }
     }
 }

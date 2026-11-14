@@ -102,33 +102,9 @@ impl SatWriter {
             output.push_str(&format!(" {}", record.subtype_id));
         }
 
-        // Determine which token index to skip for pre-7.0 output.
-        // The parser inserts a synthetic sentinel $-1 to normalize v400
-        // records to v700 layout; the writer must strip it when producing
-        // v400 output.
-        let skip_index: Option<usize> = if version.major < 7 {
-            match base_entity_type(&record.entity_type) {
-                "lump" => Some(1),
-                "shell" => Some(2),
-                "body" | "subshell" | "wire" | "face" | "loop" | "vertex" | "coedge" | "edge"
-                | "point" | "transform" | "surface" | "curve" | "pcurve" => Some(0),
-                _ => None,
-            }
-        } else {
-            None
-        };
-
         // Remaining tokens
         for (i, token) in record.tokens.iter().enumerate() {
-            if Some(i) == skip_index {
-                continue; // skip the synthetic sentinel
-            }
-            // SAT 4.0 edges have no parameter pair or trailing tolerance
-            // descriptor: $start $end $coedge $curve sense.
-            if version.major < 7
-                && base_entity_type(&record.entity_type) == "edge"
-                && (i == 2 || i == 4 || i >= 8)
-            {
+            if version.major < 7 && legacy_v400_skips(&record.entity_type, i) {
                 continue;
             }
             output.push(' ');
@@ -166,6 +142,22 @@ impl SatWriter {
             }
         }
     }
+}
+
+/// Whether token `index` of a record is absent from the pre-7.0 (v400) layout:
+/// the synthetic `$-1` sentinel the readers insert to normalize v400 records to
+/// the 7.0 layout, and the edge parameter pair and trailing tolerance fields
+/// (a SAT 4.0 edge is `$start $end $coedge $curve sense`).
+pub(crate) fn legacy_v400_skips(entity_type: &str, index: usize) -> bool {
+    let base = base_entity_type(entity_type);
+    let sentinel = match base {
+        "lump" => Some(1),
+        "shell" => Some(2),
+        "body" | "subshell" | "wire" | "face" | "loop" | "vertex" | "coedge" | "edge" | "point"
+        | "transform" | "surface" | "curve" | "pcurve" => Some(0),
+        _ => None,
+    };
+    Some(index) == sentinel || (base == "edge" && (index == 2 || index == 4 || index >= 8))
 }
 
 /// Format a float value for SAT output, preserving precision.

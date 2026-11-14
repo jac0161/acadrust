@@ -4696,8 +4696,20 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         // Normal vector
         self.write_normal(spline.normal)?;
 
+        // lince (SPL-01): like AutoCAD 2027, a closed or non-chord fit spline
+        // goes by its control points alone, marked fit (1024) and, closed,
+        // periodic (2 | 2048): given its fit points AutoCAD recomputes it with
+        // chord knots and, closed, not periodic, and the shape changes.
+        let cv_only = !spline.fit_points.is_empty()
+            && !spline.control_points.is_empty()
+            && (spline.flags.closed || spline.knot_parameterization != 0);
+        let fit_points: &[Vector3] = if cv_only { &[] } else { &spline.fit_points };
+
         // Flags
-        let flags = crate::io::dxf::spline_flags::write(spline);
+        let mut flags = crate::io::dxf::spline_flags::write(spline);
+        if cv_only {
+            flags |= 1024 | if spline.flags.closed { 2 | 2048 } else { 0 };
+        }
         self.writer.write_i16(70, flags)?;
 
         let (clamped_cps, clamped_knots) = spline
@@ -4711,7 +4723,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         self.writer.write_i16(72, knots.len() as i16)?;
         self.writer
             .write_i16(73, control_points.len() as i16)?;
-        self.writer.write_i16(74, spline.fit_points.len() as i16)?;
+        self.writer.write_i16(74, fit_points.len() as i16)?;
 
         // Knot / control-point / fit tolerances (round-trip the stored values).
         self.writer.write_double(42, spline.knot_tolerance)?;
@@ -4741,7 +4753,7 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         }
 
         // Fit points
-        for point in &spline.fit_points {
+        for point in fit_points {
             self.writer.write_point3d(11, *point)?;
         }
 
@@ -10908,7 +10920,30 @@ impl<'a, W: DxfStreamWriter> SectionWriter<'a, W> {
         let data: &str = if acis.sat_data.is_empty() && !acis.sab_data.is_empty() {
             // SAB binary only — convert via SabReader.
             match crate::entities::acis::SabReader::read(&acis.sab_data) {
-                Ok(doc) => {
+                Ok(mut doc) => {
+                    // lince (SOL-02): a ShapeManager body with spline surfaces
+                    // goes into a text DXF (before 2013) in the ACIS 4.0 form,
+                    // as in DWG 2000. AutoCAD takes the newer text there for
+                    // analytic bodies, but drops a loft or a blend ("ASM body
+                    // missing"): their nested enumerations and logicals come
+                    // out of the binary form unnamed.
+                    // shortcut: 2004-2010 could keep the ShapeManager subtypes
+                    // (AutoCAD writes them as 21500 text) once every keyword of
+                    // those blocks is named.
+                    if self.dxf_version < DxfVersion::AC1027
+                        && doc.header.version.major >= 7
+                        && doc.records.iter().any(|r| r.entity_type == "spline-surface")
+                        && doc.splines_cross_schema()
+                    {
+                        // Through SAT text, as the DWG writer does: the 4.0
+                        // layout is derived from text tokens.
+                        if let Ok(mut text) =
+                            crate::entities::acis::SatDocument::parse(&doc.to_sat_string())
+                        {
+                            text.strip_records(|r| !r.entity_type.ends_with("-gen-attrib"));
+                            doc = text.to_legacy_v400();
+                        }
+                    }
                     converted = doc.to_sat_string();
                     &converted
                 }

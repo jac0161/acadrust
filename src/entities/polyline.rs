@@ -1,7 +1,7 @@
 //! Polyline entities (2D and 3D polylines)
 
 use super::{Entity, EntityCommon};
-use crate::types::{BoundingBox3D, Vector2, Vector3};
+use crate::types::{BoundingBox3D, Handle, Vector2, Vector3};
 
 /// Polyline flags (matches DXF group code 70)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -145,6 +145,9 @@ pub struct Vertex2D {
     pub curve_tangent: f64,
     /// Vertex ID (R2010+)
     pub id: i32,
+    /// VERTEX handle read from the file (NULL: the writer allocates one).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub handle: Handle,
 }
 
 impl Vertex2D {
@@ -157,6 +160,7 @@ impl Vertex2D {
             bulge: 0.0,
             curve_tangent: 0.0,
             id: 0,
+            handle: Handle::NULL,
         }
     }
 
@@ -223,6 +227,9 @@ pub struct Polyline2D {
     pub normal: Vector3,
     /// Vertices
     pub vertices: Vec<Vertex2D>,
+    /// SEQEND handle read from the file, kept so the drawing keeps its handles (None: the writer allocates one).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub seqend_handle: Option<Handle>,
 }
 
 impl Polyline2D {
@@ -237,6 +244,7 @@ impl Polyline2D {
             elevation: 0.0,
             normal: Vector3::new(0.0, 0.0, 1.0),
             vertices: Vec::new(),
+            seqend_handle: None,
         }
     }
 

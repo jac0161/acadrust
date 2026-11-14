@@ -88,3 +88,20 @@ Result: planar/quadric solids (boxes, cylinders, spheres, cones, extrusions) sav
 ## 2026-11-11 — layout viewports in DWG 2000
 
 - **dwg_writer.rs** (`prepare_legacy_document`) and **entities.rs** (`write_viewport_entity`): R2000 files now get the VX table records (VIEWPORT ENTITY HEADER) and each VIEWPORT links to its record, as R13/R14 already did. Without them AutoCAD 2027 opened R2000 layouts with every viewport off (AUDIT 0, but empty, and `-VPORTS ON` could not turn them on). New test `test_r2000_viewports_have_vx_records`; checked with AutoCAD 2027 (AUDIT 0, viewports active, TRANS deviation ≤ 1e-9) and progeCAD in DWG 2000 and 2018.
+
+## 2026-11-14 — sync with LinceCAD main (towards 1.0.0)
+
+All of `src/` is again the exact copy shipped with LinceCAD (22 files changed, 2 new). Main areas:
+
+- **ACIS solids across DWG versions** (`entities/acis/`, new `legacy_splines.rs`): solids and surfaces that AutoCAD 2027 opens after changing the DWG version (SOL-01); spline subclasses cross between the ACIS 4.0 schema and ShapeManager's (SOL-02); spline revolutions, sweeps and tapered extrusions are converted between DWG 2000 and 2013+ instead of being dropped (SOL-04); exact revolutions of periodic splines, mixed profiles and curves touching the axis.
+- **NURBS surfaces**: a NURBSURFACE saved to DWG/DXF 2000–2010 carries AutoCAD's round-trip record (`AcadNurbSurfaceData` and `ACDB_RECOMPOSE_DATA`) and reopens as NURBSURFACE; one coming from DWG 2000 is saved to 2013+ without that record, as AutoCAD does (SOL-03, SOL-05).
+- **Fit-point SPLINE** keeps its shape in DWG 2000–2018 and DXF (SPL-01).
+- **Visual styles** of a 2018 drawing saved to 2004/2007/2010 carry their round-trip record as AutoCAD 2027 writes it (VS-01).
+- **Handles**: VERTEX and SEQEND of polylines keep their handles on save (HND-01).
+- **Proxies** (new `entities/proxy_draw.rs`): Civil 3D proxy entities are drawn from their substitute graphics and kept on save; proxies count as instances of their class when writing DWG.
+- **DWG 2000 layouts**: only the viewports of the active layout get VX records, as AutoCAD does.
+- **Annotative attributes**: decomposed INSERTs are also recomposed when reading DXF 2000–2007.
+- **Robustness**: no panics on damaged AC1021 page maps or handle maps, nor when writing R12.
+- Default dimension style: the "Standard" style kept when a drawing lacks it points DIMTXSTY to a text style of the file.
+
+Checked with LinceCAD's library tests and end-to-end tests against AutoCAD 2027 and progeCAD (AUDIT 0) in DWG 2000–2018.

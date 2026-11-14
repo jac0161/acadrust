@@ -71,11 +71,14 @@ impl DwgWriter {
         let mut prepared = crate::io::loft_parameters::prepared(document);
         prepare_drop_version_unsupported_entities(&mut prepared);
         prepare_mleader_style_version_eed(&mut prepared);
+        prepare_legacy_fit_splines(&mut prepared);
+        prepare_nurb_surfaces(&mut prepared, document.version);
         prepare_surface_classes(&mut prepared);
         prepare_database_references(&mut prepared);
         prepare_table_keys(&mut prepared);
         prepare_active_viewport_elevation(&mut prepared);
         prepare_roundtrip_records(&mut prepared);
+        prepare_sub_entity_handles(&mut prepared);
         prepare_book_colors(&mut prepared)?;
         let document = prepared.as_ref();
         let perf = std::env::var_os("PERF").is_some();
@@ -163,11 +166,14 @@ impl DwgWriter {
         let mut prepared = crate::io::loft_parameters::prepared(document);
         prepare_drop_version_unsupported_entities(&mut prepared);
         prepare_mleader_style_version_eed(&mut prepared);
+        prepare_legacy_fit_splines(&mut prepared);
+        prepare_nurb_surfaces(&mut prepared, document.version);
         prepare_surface_classes(&mut prepared);
         prepare_database_references(&mut prepared);
         prepare_table_keys(&mut prepared);
         prepare_active_viewport_elevation(&mut prepared);
         prepare_roundtrip_records(&mut prepared);
+        prepare_sub_entity_handles(&mut prepared);
         prepare_book_colors(&mut prepared)?;
         write_ac21_impl(&mut output, prepared.as_ref(), document.version, true)
     }
@@ -231,6 +237,199 @@ fn prepare_drop_version_unsupported_entities(document: &mut std::borrow::Cow<'_,
     }
 }
 
+/// lince (SOL-01): NURBSURFACE only exists from DWG 2013 on. AutoCAD 2027 saves
+/// a NURBS surface into an older DWG as a plain SURFACE (same modeler body) and
+/// rejects an older drawing that holds a NURBSURFACE record (ErrorStatus=53).
+/// SOL-05: like AutoCAD, the SURFACE keeps an `ACAD_XREC_ROUNDTRIP` XRecord
+/// (`AcadNurbSurfaceData` + `AcadModlrDecomposedType` 1) and is listed in the
+/// root dictionary's `ACDB_RECOMPOSE_DATA` (90 1, a 330 per object; without it
+/// AutoCAD opened a DXF one as a SURFACE), so that AutoCAD opens it as a
+/// NURBSURFACE again. Shared with the DXF writer.
+pub(crate) fn prepare_nurb_surfaces(document: &mut std::borrow::Cow<'_, CadDocument>, version: DxfVersion) {
+    use crate::entities::{EntityType, SurfaceData, SurfaceKind};
+    use crate::objects::{DictionaryCloningFlags, ObjectType, XRecord, XRecordEntry, XRecordValue};
+    if version >= DxfVersion::AC1027 {
+        restore_downsaved_nurb_surfaces(document);
+        return;
+    }
+    let nurbs: Vec<Handle> = document
+        .entities()
+        .filter(|e| matches!(e, EntityType::Surface(s) if s.kind == SurfaceKind::Nurb))
+        .map(|e| e.common().handle)
+        .collect();
+    let root = document.header.named_objects_dict_handle;
+    let recompose = match document.objects.get(&root) {
+        Some(ObjectType::Dictionary(d)) if !nurbs.is_empty() => Some(d.get(RECOMPOSE_DATA)),
+        _ => None,
+    };
+    if let Some(existing) = recompose {
+        let document = document.to_mut();
+        let record = match existing.filter(|h| matches!(document.objects.get(h), Some(ObjectType::XRecord(_)))) {
+            Some(record) => record,
+            None => {
+                let record = document.allocate_handle();
+                let mut x = XRecord::named(RECOMPOSE_DATA);
+                (x.handle, x.owner, x.reactors) = (record, root, vec![root]);
+                x.cloning_flags = DictionaryCloningFlags::KeepExisting;
+                x.add_entry(XRecordEntry::int32(90, 1));
+                document.objects.insert(record, ObjectType::XRecord(Box::new(x)));
+                if let Some(ObjectType::Dictionary(d)) = document.objects.get_mut(&root) {
+                    d.entries.retain(|(name, _)| name != RECOMPOSE_DATA);
+                    d.add_entry(RECOMPOSE_DATA, record);
+                }
+                record
+            }
+        };
+        if let Some(ObjectType::XRecord(x)) = document.objects.get_mut(&record) {
+            x.raw_dwg_data = None;
+            for handle in &nurbs {
+                x.add_entry(XRecordEntry::handle(330, *handle));
+            }
+        }
+    }
+    for handle in nurbs {
+        let document = document.to_mut();
+        let Some(EntityType::Surface(s)) = document.get_entity_mut(handle) else { continue };
+        let payload = nurb_surface_roundtrip_payload(s);
+        s.kind = SurfaceKind::Generic;
+        s.surface_data = SurfaceData::Generic;
+        // AutoCAD also writes an `AcadModlrDecomposedChecksum` (an ASM checksum of
+        // the body); it reopens the record as a NURBSURFACE without it.
+        let record = document.ensure_xrecord(handle, "ACAD_XREC_ROUNDTRIP");
+        if let Some(ObjectType::XRecord(x)) = document.objects.get_mut(&record) {
+            x.cloning_flags = DictionaryCloningFlags::KeepExisting;
+            x.reactors = vec![x.owner];
+            x.entries = vec![
+                XRecordEntry::string(102, "AcadNurbSurfaceData"),
+                XRecordEntry::int32(90, payload.len() as i32),
+                XRecordEntry::new(310, XRecordValue::Chunk(payload)),
+                XRecordEntry::string(102, "AcadModlrDecomposedType"),
+                XRecordEntry::int32(90, 1),
+            ];
+        }
+    }
+}
+
+/// lince (SOL-05): the root-dictionary XRecord listing the objects a pre-2013
+/// save decomposed (NURBS surfaces, table styles…), for AutoCAD to rebuild them.
+const RECOMPOSE_DATA: &str = "ACDB_RECOMPOSE_DATA";
+
+/// lince (SOL-05): the `AcadNurbSurfaceData` bytes, as AutoCAD 2027's SAVEAS
+/// 2000–2010 writes them: BS U isolines, BS V isolines, a zero byte, BS 170 and
+/// twelve BD 1.0 (measured changing the isolines and 170 of tools/solidos/splines2018.dwg).
+// shortcut: the zero byte and the twelve 1.0 are constant in every sample (the cv hull
+// display and the 10–13 vectors stay 0 there); decode them if a sample varies them.
+fn nurb_surface_roundtrip_payload(surface: &crate::entities::Surface) -> Vec<u8> {
+    use super::dwg_stream_writers::bit_writer::DwgBitWriter;
+    use super::dwg_version::DwgVersion;
+    let short_170 = match surface.surface_data {
+        crate::entities::SurfaceData::Nurb { short_170, .. } => short_170,
+        _ => 0,
+    };
+    let mut w = DwgBitWriter::new(DwgVersion::AC15, DxfVersion::AC1015);
+    w.write_bit_short(surface.u_isolines);
+    w.write_bit_short(surface.v_isolines);
+    w.write_byte(0);
+    w.write_bit_short(short_170);
+    for _ in 0..12 {
+        w.write_bit_double(1.0);
+    }
+    w.into_bytes()
+}
+
+/// The BS 170 of an `AcadNurbSurfaceData` payload (see `nurb_surface_roundtrip_payload`).
+fn nurb_surface_roundtrip_short_170(payload: &[u8]) -> i16 {
+    use super::dwg_stream_readers::bit_reader::DwgBitReader;
+    use super::dwg_version::DwgVersion;
+    let mut r = DwgBitReader::new(payload.to_vec(), DwgVersion::AC15, DxfVersion::AC1015);
+    r.read_bit_short();
+    r.read_bit_short();
+    r.read_byte();
+    r.read_bit_short()
+}
+
+/// lince (SOL-03): a NURBS surface down-saved to a pre-2013 DWG is a plain
+/// SURFACE whose extension dictionary holds an `ACAD_XREC_ROUNDTRIP` XRecord
+/// tagged `AcadNurbSurfaceData`. Saving it to 2013+ AutoCAD turns it back into
+/// a NURBSURFACE and drops the record. Kept as is, the ODA engine (progeCAD)
+/// rebuilds the NURBSURFACE from that pre-2013 record and audits a garbage
+/// offset (-3.1e231).
+fn restore_downsaved_nurb_surfaces(document: &mut std::borrow::Cow<'_, CadDocument>) {
+    use crate::entities::{EntityType, SurfaceData, SurfaceKind};
+    use crate::types::Vector3;
+    use crate::objects::{ObjectType, XRecordValue};
+    let found: Vec<(Handle, Handle, Handle, i16)> = document
+        .entities()
+        .filter(|e| matches!(e, EntityType::Surface(s) if s.kind == SurfaceKind::Generic))
+        .filter_map(|e| {
+            let owner = e.common().handle;
+            let dictionary = document.extension_dictionary_handle(owner)?;
+            let Some(ObjectType::Dictionary(entries)) = document.objects.get(&dictionary) else {
+                return None;
+            };
+            let record = entries.get("ACAD_XREC_ROUNDTRIP")?;
+            let Some(ObjectType::XRecord(x)) = document.objects.get(&record) else {
+                return None;
+            };
+            let short_170 = x.entries.iter().find_map(|entry| match &entry.value {
+                XRecordValue::Chunk(payload) if entry.code == 310 => Some(nurb_surface_roundtrip_short_170(payload)),
+                _ => None,
+            });
+            x.entries
+                .iter()
+                .any(|entry| entry.code == 102 && entry.value.as_string() == Some("AcadNurbSurfaceData"))
+                .then_some((owner, dictionary, record, short_170.unwrap_or(0)))
+        })
+        .collect();
+    if found.is_empty() {
+        return;
+    }
+    let document = document.to_mut();
+    let owners: Vec<Handle> = found.iter().map(|f| f.0).collect();
+    for (owner, dictionary, record, short_170) in found {
+        document.objects.remove(&record);
+        let mut now_empty = false;
+        if let Some(ObjectType::Dictionary(entries)) = document.objects.get_mut(&dictionary) {
+            entries.entries.retain(|(name, _)| name != "ACAD_XREC_ROUNDTRIP");
+            entries.hard_owner_entries.retain(|name| name != "ACAD_XREC_ROUNDTRIP");
+            now_empty = entries.entries.is_empty();
+        }
+        if now_empty {
+            document.objects.remove(&dictionary);
+            document.xdic_by_handle.remove(&owner);
+        }
+        if let Some(EntityType::Surface(s)) = document.get_entity_mut(owner) {
+            if now_empty {
+                s.common.xdictionary_handle = None;
+            }
+            s.kind = SurfaceKind::Nurb;
+            // shortcut: of the record's NURBS fields only 170 is decoded (see nurb_surface_roundtrip_payload).
+            s.surface_data = SurfaceData::Nurb {
+                short_170,
+                cv_hull_display: false,
+                u_vector1: Vector3::ZERO,
+                v_vector1: Vector3::ZERO,
+                u_vector2: Vector3::ZERO,
+                v_vector2: Vector3::ZERO,
+            };
+        }
+    }
+    // SOL-05: and out of ACDB_RECOMPOSE_DATA, which goes when it lists nothing else.
+    let root = document.header.named_objects_dict_handle;
+    let Some(ObjectType::Dictionary(d)) = document.objects.get(&root) else { return };
+    let Some(record) = d.get(RECOMPOSE_DATA) else { return };
+    let Some(ObjectType::XRecord(x)) = document.objects.get_mut(&record) else { return };
+    x.entries.retain(|e| !e.value.as_handle().is_some_and(|h| owners.contains(&h)));
+    x.synchronize_object_references();
+    x.raw_dwg_data = None;
+    if !x.entries.iter().any(|e| e.value.as_handle().is_some()) {
+        document.objects.remove(&record);
+        if let Some(ObjectType::Dictionary(d)) = document.objects.get_mut(&root) {
+            d.entries.retain(|(name, _)| name != RECOMPOSE_DATA);
+        }
+    }
+}
+
 /// MLEADERSTYLE (AutoCAD 2008, AC1021) has no version field before R2010, so
 /// AutoCAD tags it with `ACAD_MLEADERVER` EED (1070 = 2) when saving to
 /// R2000/R2004. The ODA engine (progeCAD, BricsCAD...) rejects a pre-R2007
@@ -271,6 +470,62 @@ fn prepare_mleader_style_version_eed(document: &mut std::borrow::Cow<'_, CadDocu
         let mut record = crate::xdata::ExtendedDataRecord::new(APP);
         record.add_value(crate::xdata::XDataValue::Integer16(2));
         document.object_xdata.entry(handle).or_default().add_record(record);
+    }
+}
+
+/// lince (SPL-01): before DWG 2013 a fit-point SPLINE (scenario 2) has no
+/// closed bit nor knot parameterization, and AutoCAD 2027 recomputes it open
+/// with chord knots. Its SAVEAS writes a closed or non-chord fit spline by its
+/// control points (closed and periodic) instead, with ACAD_SPLINE_DATA EED
+/// (100 = 0 fit method, 102 = knots) and, closed, ACAD_SPLINE_DATA2 (103 = 1,
+/// 104 = knots), from which it restores the fit spline. Measured on its 2000,
+/// 2004, 2007 and 2010 output; an open chord one stays fit points.
+fn prepare_legacy_fit_splines(document: &mut std::borrow::Cow<'_, CadDocument>) {
+    use crate::entities::EntityType;
+    use crate::xdata::{ExtendedDataRecord, XDataValue};
+    if document.version >= DxfVersion::AC1027 {
+        return;
+    }
+    let pending: Vec<Handle> = document
+        .entities()
+        .filter(|e| {
+            matches!(e, EntityType::Spline(s) if !s.fit_points.is_empty()
+                && (s.flags.closed || s.knot_parameterization != 0)
+                && !s.control_points.is_empty()
+                && s.knots.len() == s.control_points.len() + s.degree.max(0) as usize + 1)
+        })
+        .map(|e| e.common().handle)
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+    let document = document.to_mut();
+    for app in ["ACAD_SPLINE_DATA", "ACAD_SPLINE_DATA2"] {
+        if !document.app_ids.contains(app) {
+            let mut a = crate::tables::AppId::new(app);
+            a.handle = document.allocate_handle();
+            let _ = document.app_ids.add(a);
+        }
+    }
+    for handle in pending {
+        let Some(EntityType::Spline(s)) = document.get_entity_mut(handle) else { continue };
+        let knots = s.knot_parameterization as i16;
+        s.fit_points.clear();
+        s.flags.periodic = s.flags.closed;
+        s.dwg_scenario = Some(1);
+        let mut records = vec![("ACAD_SPLINE_DATA", vec![100, 0, 101, 0, 102, knots])];
+        if s.flags.closed {
+            records.push(("ACAD_SPLINE_DATA2", vec![103, 1, 104, knots]));
+        }
+        for (app, values) in records {
+            if s.common.extended_data.get_record(app).is_none() {
+                let mut record = ExtendedDataRecord::new(app);
+                for v in values {
+                    record.add_value(XDataValue::Integer16(v));
+                }
+                s.common.extended_data.add_record(record);
+            }
+        }
     }
 }
 
@@ -838,6 +1093,76 @@ pub(crate) fn prepare_table_keys(document: &mut std::borrow::Cow<'_, CadDocument
     document.to_mut().resync_table_keys();
 }
 
+/// Vertex and SEQEND handles read from a file are written as they were, so the drawing keeps its handles (HND-01).
+/// A copy, or a polyline brought from another drawing, may still carry them: one that repeats, belongs to another
+/// record or is not below HANDSEED is cleared, and the object writer allocates a new one.
+fn prepare_sub_entity_handles(document: &mut std::borrow::Cow<'_, CadDocument>) {
+    use crate::entities::EntityType;
+    use crate::tables::TableEntry;
+    use std::collections::HashSet;
+    fn subs(entity: &mut EntityType) -> Vec<&mut Handle> {
+        match entity {
+            EntityType::Polyline2D(p) => p.vertices.iter_mut().map(|v| &mut v.handle).chain(p.seqend_handle.as_mut()).collect(),
+            EntityType::Polyline3D(p) => p.vertices.iter_mut().map(|v| &mut v.handle).chain(p.seqend_handle.as_mut()).collect(),
+            EntityType::PolygonMesh(m) => m.vertices.iter_mut().map(|v| &mut v.common.handle).chain(m.seqend_handle.as_mut()).collect(),
+            EntityType::PolyfaceMesh(m) => (m.vertices.iter_mut().map(|v| &mut v.common.handle))
+                .chain(m.faces.iter_mut().map(|f| &mut f.common.handle))
+                .chain(m.seqend_handle.as_mut())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+    let doc: &CadDocument = document;
+    let mut used: HashSet<Handle> = doc.objects.keys().copied().collect();
+    used.extend(doc.entities.iter().map(|e| e.common().handle));
+    for e in &doc.entities {
+        if let EntityType::Insert(i) = e.as_ref() {
+            used.extend(i.attributes.iter().map(|a| a.common.handle).chain(i.seqend_handle));
+        }
+    }
+    macro_rules! table {
+        ($($t:ident),*) => {$(
+            used.insert(doc.$t.handle());
+            used.extend(doc.$t.iter().map(|x| x.handle()));
+        )*};
+    }
+    table!(layers, line_types, text_styles, block_records, dim_styles, app_ids, views, vports, ucss, vx_table);
+    used.extend(doc.block_records.iter().flat_map(|b| [b.block_entity_handle, b.block_end_handle]));
+    let seed = doc.header.handle_seed;
+    let mut clash = Vec::new();
+    for e in &doc.entities {
+        if !matches!(
+            e.as_ref(),
+            EntityType::Polyline2D(_) | EntityType::Polyline3D(_) | EntityType::PolygonMesh(_) | EntityType::PolyfaceMesh(_)
+        ) {
+            continue;
+        }
+        // A clone to share `subs` with the fix below; as long as writing the polyline.
+        let mut e = EntityType::clone(e);
+        let bad: Vec<usize> = subs(&mut e)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, h)| !h.is_null() && (h.value() >= seed || !used.insert(**h)))
+            .map(|(i, _)| i)
+            .collect();
+        if !bad.is_empty() {
+            clash.push((e.common().handle, bad));
+        }
+    }
+    if clash.is_empty() {
+        return;
+    }
+    let document = document.to_mut();
+    for (owner, bad) in clash {
+        if let Some(e) = document.get_entity_mut(owner) {
+            let mut subs = subs(e);
+            for i in bad {
+                *subs[i] = Handle::NULL;
+            }
+        }
+    }
+}
+
 fn prepare_roundtrip_records(document: &mut std::borrow::Cow<'_, CadDocument>) {
     use crate::objects::{ObjectType, XRecordValue};
     if document.version < DxfVersion::AC1024 {
@@ -847,7 +1172,10 @@ fn prepare_roundtrip_records(document: &mut std::borrow::Cow<'_, CadDocument>) {
     let mut drops: Vec<(Handle, Handle, String, bool)> = Vec::new();
     for (handle, object) in &document.objects {
         let roundtrip_owner = match object {
-            ObjectType::VisualStyle(style) => style.properties.len() >= 58,
+            // 2010 keeps the visual style record: AutoCAD writes it there too.
+            ObjectType::VisualStyle(style) => {
+                style.properties.len() >= 58 && document.version >= DxfVersion::AC1027
+            }
             ObjectType::TableStyle(style) => !style.modern_overrides.is_empty(),
             _ => false,
         };
@@ -1223,6 +1551,45 @@ pub fn custom_records_as_proxies(document: &mut CadDocument, target: DxfVersion)
         });
         converted += 1;
     }
+    // lince (PROXY-CIVIL3D): custom entities kept raw (Civil 3D, Map 3D…) pass
+    // to another version as ACAD_PROXY_ENTITY with their graphics, as the
+    // SAVEAS of an AutoCAD without the object enabler writes them.
+    let raw_entities: Vec<Handle> = document
+        .entities()
+        .filter(|e| matches!(e, EntityType::Unknown(u) if u.raw_dwg_data.is_some() && u.dwg_source_version.is_some_and(|v| v != target)))
+        .map(|e| e.common().handle)
+        .collect();
+    for handle in raw_entities {
+        let Some(entity) = document.get_entity_mut(handle) else { continue };
+        let EntityType::Unknown(unknown) = &*entity else { continue };
+        let (Some(raw), Some(source)) = (unknown.raw_dwg_data.as_deref(), unknown.dwg_source_version) else { continue };
+        let Some(class_id) = class_id(&unknown.dxf_name) else { continue };
+        let Some((payload, text_payload, object_ids)) =
+            DwgObjectWriter::raw_entity_proxy_body(raw, unknown.dwg_handle_bits, source)
+        else {
+            continue;
+        };
+        let (dwg_version, maintenance_version, version) = versions(source);
+        let common = unknown.common.clone();
+        let graphics = common.graphic_data.as_deref().map(ProxyPayload::from_bytes).unwrap_or_default();
+        *entity = EntityType::Extended(Box::new(crate::entities::ExtendedEntity {
+            common,
+            data: ExtendedEntityData::Proxy(ProxyEntityData {
+                proxy_id: 498,
+                class_id,
+                dxf_subclass: String::new(),
+                version,
+                dwg_version,
+                maintenance_version,
+                from_dxf: false,
+                graphics,
+                payload,
+                text_payload,
+                object_ids,
+            }),
+        }));
+        converted += 1;
+    }
     converted
 }
 
@@ -1331,14 +1698,21 @@ fn prepare_legacy_document(document: &mut CadDocument) {
             document.vx_table.set_handle(control);
             document.header.vpent_hdr_control_handle = control;
         }
+        // lince (LIBROMAPAS): only the viewports of the active layout
+        // (*Paper_Space) have a VX record, as in AutoCAD's SAVEAS 2000 (checked on
+        // a drawing with five more layouts: their viewports get none). With a
+        // record for a viewport of another layout, ODA readers (progeCAD) took it
+        // as the overall viewport of the active layout and AUDIT reported it.
+        let active_paper = document.block_records.get("*Paper_Space").map(|b| b.handle);
         let missing: Vec<_> = document
             .entities()
             .filter_map(|entity| match entity {
                 crate::entities::EntityType::Viewport(viewport)
-                    if !document
-                        .vx_table
-                        .iter()
-                        .any(|record| record.viewport == viewport.common.handle) =>
+                    if Some(viewport.common.owner_handle) == active_paper
+                        && !document
+                            .vx_table
+                            .iter()
+                            .any(|record| record.viewport == viewport.common.handle) =>
                 {
                     Some((viewport.common.handle, viewport.is_on()))
                 }
@@ -3005,6 +3379,174 @@ mod tests {
     use crate::document::CadDocument;
     use crate::types::{DxfVersion, Handle};
 
+    /// lince (SOL-01): a NURBSURFACE goes into a pre-2013 DWG as a plain
+    /// SURFACE, as AutoCAD 2027 writes it (with the class, the drawing did not
+    /// open), and stays a NURBSURFACE from 2013 on.
+    #[test]
+    fn nurb_surface_is_a_plain_surface_before_2013() {
+        use crate::entities::{EntityType, Surface, SurfaceKind};
+        let sat = crate::entities::acis::primitives::build_box([0.0; 3], 1.0, 1.0, 1.0).to_sat_string();
+        for (version, kind) in [(DxfVersion::AC1024, SurfaceKind::Generic), (DxfVersion::AC1032, SurfaceKind::Nurb)] {
+            let mut drawing = CadDocument::with_version(version);
+            let mut surface = Surface::new(SurfaceKind::Nurb);
+            surface.acis_data = crate::entities::AcisData::from_sat(&sat);
+            drawing.add_entity(EntityType::Surface(Box::new(surface))).unwrap();
+            let bytes = DwgWriter::write_to_vec(&drawing).unwrap();
+            let read = crate::DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+            let Some(EntityType::Surface(back)) = read.entities().next() else { panic!("missing surface") };
+            assert_eq!(back.kind, kind, "DWG {version:?}");
+        }
+    }
+
+    /// lince (SOL-03): a NURBS surface down-saved to 2000 (plain SURFACE with
+    /// an `AcadNurbSurfaceData` round-trip record) goes back into 2018 as a
+    /// NURBSURFACE without the record, as AutoCAD 2027 saves it; progeCAD
+    /// rebuilt it from the record and audited a -3.1e231 offset.
+    #[test]
+    fn downsaved_nurb_surface_comes_back_in_2018() {
+        use crate::entities::{EntityType, Surface, SurfaceKind};
+        use crate::objects::ObjectType;
+        let sat = crate::entities::acis::primitives::build_box([0.0; 3], 1.0, 1.0, 1.0).to_sat_string();
+        let mut drawing = CadDocument::with_version(DxfVersion::AC1032);
+        let mut surface = Surface::new(SurfaceKind::Generic);
+        surface.acis_data = crate::entities::AcisData::from_sat(&sat);
+        let owner = drawing.add_entity(EntityType::Surface(Box::new(surface))).unwrap();
+        let record = drawing.ensure_xrecord(owner, "ACAD_XREC_ROUNDTRIP");
+        let Some(ObjectType::XRecord(x)) = drawing.objects.get_mut(&record) else { panic!("no record") };
+        x.add_string(102, "AcadNurbSurfaceData");
+        let bytes = DwgWriter::write_to_vec(&drawing).unwrap();
+        let read = crate::DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+        let Some(EntityType::Surface(back)) = read.entities().next() else { panic!("missing surface") };
+        assert_eq!(back.kind, SurfaceKind::Nurb);
+        assert_eq!(read.extension_dictionary_handle(back.common.handle), None);
+        assert!(!read.objects.values().any(|o| matches!(o, ObjectType::XRecord(x)
+            if x.entries.iter().any(|e| e.value.as_string() == Some("AcadNurbSurfaceData")))));
+    }
+
+    /// lince (SOL-05): the `AcadNurbSurfaceData` bytes are AutoCAD 2027's, measured
+    /// on its SAVEAS 2000 of tools/solidos/splines2018.dwg: as is (isolines 6/6),
+    /// with isolines 9/4 and with 170 = 2.
+    #[test]
+    fn nurb_surface_roundtrip_payload_is_autocads() {
+        use crate::entities::{Surface, SurfaceData, SurfaceKind};
+        for (u, v, short, bytes) in [
+            (6, 6, 0, &[0x41, 0x90, 0x60, 0x09, 0x55, 0x55, 0x54][..]),
+            (9, 4, 0, &[0x42, 0x50, 0x40, 0x09, 0x55, 0x55, 0x54][..]),
+            (6, 6, 2, &[0x41, 0x90, 0x60, 0x04, 0x09, 0x55, 0x55, 0x54][..]),
+        ] {
+            let mut s = Surface::new(SurfaceKind::Nurb);
+            (s.u_isolines, s.v_isolines) = (u, v);
+            if let SurfaceData::Nurb { short_170, .. } = &mut s.surface_data {
+                *short_170 = short;
+            }
+            assert_eq!(nurb_surface_roundtrip_payload(&s), bytes);
+            assert_eq!(nurb_surface_roundtrip_short_170(bytes), short);
+        }
+    }
+
+    /// lince (SOL-05): a NURBSURFACE saved to DWG and DXF 2000–2010 is a SURFACE
+    /// with AutoCAD 2027's round-trip record (without it AutoCAD reopened it as a
+    /// plain SURFACE: its control vertices could not be edited), and saved again
+    /// in 2018 it is the same NURBSURFACE.
+    #[test]
+    fn nurb_surface_keeps_autocads_roundtrip_record_before_2013() {
+        use crate::entities::{EntityType, Surface, SurfaceData, SurfaceKind};
+        use crate::objects::XRecordValue;
+        let sat = crate::entities::acis::primitives::build_box([0.0; 3], 1.0, 1.0, 1.0).to_sat_string();
+        let mut drawing = CadDocument::with_version(DxfVersion::AC1032);
+        let mut surface = Surface::new(SurfaceKind::Nurb);
+        surface.acis_data = crate::entities::AcisData::from_sat(&sat);
+        if let SurfaceData::Nurb { short_170, .. } = &mut surface.surface_data {
+            *short_170 = 2;
+        }
+        let original = surface.surface_data.clone();
+        drawing.add_entity(EntityType::Surface(Box::new(surface))).unwrap();
+        let dwg = |d: &CadDocument, version| {
+            let mut d = d.clone();
+            d.version = version;
+            let bytes = DwgWriter::write_to_vec(&d).unwrap();
+            crate::DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap()
+        };
+        let dxf = |d: &CadDocument, version| {
+            let bytes = crate::DxfWriter::new(d).with_version(version).write_to_vec().unwrap();
+            crate::DxfReader::from_reader(std::io::Cursor::new(bytes)).unwrap().read().unwrap()
+        };
+        let surface = |d: &CadDocument| match d.entities().next() {
+            Some(EntityType::Surface(s)) => (**s).clone(),
+            _ => panic!("missing surface"),
+        };
+        // The handles ACDB_RECOMPOSE_DATA (root dictionary) lists, after its 90 1.
+        let recompose = |d: &CadDocument| {
+            let root = d.header.named_objects_dict_handle;
+            let Some(crate::objects::ObjectType::Dictionary(r)) = d.objects.get(&root) else { return None };
+            let Some(crate::objects::ObjectType::XRecord(x)) = d.objects.get(&r.get(RECOMPOSE_DATA)?) else { return None };
+            assert_eq!(x.entries[0].value.as_i32(), Some(1));
+            Some(x.entries.iter().filter_map(|e| e.value.as_handle()).collect::<Vec<_>>())
+        };
+        for version in [DxfVersion::AC1015, DxfVersion::AC1018, DxfVersion::AC1021, DxfVersion::AC1024] {
+            for (old, ext) in [(dwg(&drawing, version), "dwg"), (dxf(&drawing, version), "dxf")] {
+                let s = surface(&old);
+                assert_eq!(s.kind, SurfaceKind::Generic, "{ext} {version:?}");
+                let x = old.xrecord(s.common.handle, "ACAD_XREC_ROUNDTRIP").expect("round-trip record");
+                let codes: Vec<_> = x.entries.iter().map(|e| e.code).collect();
+                assert_eq!(codes, [102, 90, 310, 102, 90], "{ext} {version:?}");
+                assert_eq!(x.entries[0].value.as_string(), Some("AcadNurbSurfaceData"));
+                assert_eq!(x.entries[2].value, XRecordValue::Chunk(vec![0x41, 0x10, 0x40, 0x04, 0x09, 0x55, 0x55, 0x54]));
+                assert_eq!(x.entries[3].value.as_string(), Some("AcadModlrDecomposedType"));
+                assert_eq!(recompose(&old), Some(vec![s.common.handle]), "{ext} {version:?}");
+                for back in [dwg(&old, DxfVersion::AC1032), dxf(&old, DxfVersion::AC1032)] {
+                    let s = surface(&back);
+                    assert_eq!((s.kind, &s.surface_data), (SurfaceKind::Nurb, &original), "{ext} {version:?}");
+                    assert_eq!(back.extension_dictionary_handle(s.common.handle), None);
+                    assert_eq!(recompose(&back), None, "{ext} {version:?}");
+                }
+            }
+        }
+    }
+
+    /// lince (SPL-01): before 2013 a closed or non-chord fit spline goes by its
+    /// control points (closed and periodic) with ACAD_SPLINE_DATA(2), as
+    /// AutoCAD 2027's SAVEAS; an open chord one and every one from 2013 on
+    /// keep their fit points.
+    #[test]
+    fn legacy_fit_splines_go_by_control_points() {
+        use crate::entities::{EntityType, Spline};
+        use crate::types::Vector3;
+        let v = |x: f64, y: f64| Vector3::new(x, y, 0.0);
+        let spline = |closed: bool, knots: i32| {
+            let mut s = Spline::new();
+            (s.degree, s.flags.closed, s.knot_parameterization) = (3, closed, knots);
+            s.fit_points = vec![v(0.0, 0.0), v(10.0, 5.0), v(20.0, 0.0)];
+            s.control_points = vec![v(0.0, 0.0), v(3.0, 2.0), v(10.0, 8.0), v(17.0, 2.0), v(20.0, 0.0)];
+            s.knots = vec![0.0, 0.0, 0.0, 0.0, 11.0, 22.0, 22.0, 22.0, 22.0];
+            s
+        };
+        for version in [DxfVersion::AC1015, DxfVersion::AC1024, DxfVersion::AC1032] {
+            let mut drawing = CadDocument::with_version(version);
+            for (closed, knots) in [(true, 0), (false, 1), (false, 0)] {
+                drawing.add_entity(EntityType::Spline(spline(closed, knots))).unwrap();
+            }
+            let bytes = DwgWriter::write_to_vec(&drawing).unwrap();
+            let read = crate::DwgReader::from_stream(std::io::Cursor::new(bytes)).read().unwrap();
+            let back: Vec<&Spline> = read.entities().filter_map(|e| if let EntityType::Spline(s) = e { Some(s) } else { None }).collect();
+            assert_eq!(back.len(), 3, "DWG {version:?}");
+            for (s, (closed, knots)) in back.iter().zip([(true, 0), (false, 1), (false, 0)]) {
+                let by_cv = version < DxfVersion::AC1027 && (closed || knots != 0);
+                assert_eq!(s.fit_points.is_empty(), by_cv, "DWG {version:?} {closed} {knots}");
+                assert_eq!(s.control_points.len() == 5 && s.knots.len() == 9, by_cv, "DWG {version:?} {closed} {knots}");
+                assert_eq!(s.flags.closed, closed, "DWG {version:?} {closed} {knots}");
+                assert_eq!(s.flags.periodic, by_cv && closed, "DWG {version:?} {closed} {knots}");
+                let data = s.common.extended_data.get_record("ACAD_SPLINE_DATA").map(|r| r.values.clone());
+                assert_eq!(data.is_some(), by_cv, "DWG {version:?} {closed} {knots}");
+                if let Some(values) = data {
+                    let knots = knots as i16;
+                    assert_eq!(values, [100, 0, 101, 0, 102, knots].map(crate::xdata::XDataValue::Integer16));
+                }
+                assert_eq!(s.common.extended_data.get_record("ACAD_SPLINE_DATA2").is_some(), by_cv && closed);
+            }
+        }
+    }
+
     #[test]
     fn unchanged_history_keeps_source_bytes_without_hiding_edits() {
         use crate::objects::{
@@ -3989,6 +4531,27 @@ mod tests {
         }
     }
 
+    /// lince (LIBROMAPAS): a viewport of a layout that is not the active one
+    /// gets no VX record, and is still read back on.
+    #[test]
+    fn test_r2000_vx_records_only_for_the_active_layout() {
+        use crate::entities::{EntityType, Viewport};
+
+        let mut doc = CadDocument::new();
+        doc.add_layout("Other").unwrap();
+        let other = doc.block_records.get("*Paper_Space0").unwrap().handle;
+        let mut vp = Viewport::new();
+        vp.id = 1;
+        vp.common.owner_handle = other;
+        let handle = doc.add_entity(EntityType::Viewport(Box::new(vp))).unwrap();
+        doc.version = DxfVersion::AC1015;
+        let reread = crate::io::dwg::DwgReader::from_stream(std::io::Cursor::new(DwgWriter::write_to_vec(&doc).unwrap()))
+            .read()
+            .unwrap();
+        assert!(reread.vx_table.is_empty() && reread.header.current_vx_handle.is_null());
+        assert!(matches!(reread.get_entity(handle), Some(EntityType::Viewport(v)) if v.is_on()));
+    }
+
     /// Write a Solid3D with SAT data to DWG R2004, read back, verify SAT preserved.
     #[test]
     fn test_roundtrip_solid3d_r2004() {
@@ -4355,5 +4918,70 @@ mod tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod sub_entity_handle_tests {
+    use crate::entities::{EntityType, Polyline2D, Polyline3D, Vertex2D};
+    use crate::io::dwg::{DwgReader, DwgWriter};
+    use crate::types::{DxfVersion, Handle, Vector3};
+    use crate::CadDocument;
+    use std::collections::HashSet;
+    use std::io::Cursor;
+
+    fn reopen(doc: &CadDocument) -> CadDocument {
+        DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(doc).unwrap())).read().unwrap()
+    }
+
+    /// The VERTEX and SEQEND handles of each polyline, in drawing order.
+    fn sub_handles(doc: &CadDocument) -> Vec<Vec<Handle>> {
+        doc.entities()
+            .filter_map(|e| match e {
+                EntityType::Polyline2D(p) => Some(p.vertices.iter().map(|v| v.handle).chain(p.seqend_handle).collect()),
+                EntityType::Polyline3D(p) => Some(p.vertices.iter().map(|v| v.handle).chain(p.seqend_handle).collect()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// HND-01: saving a drawing again keeps the handles of its polylines' VERTEX and SEQEND records instead of
+    /// renumbering them above HANDSEED; a copy that still carries them gets new ones, and none is lost.
+    #[test]
+    fn polyline_vertices_keep_their_handles() {
+        for version in [DxfVersion::AC1015, DxfVersion::AC1021, DxfVersion::AC1032] {
+            let mut doc = CadDocument::new();
+            doc.version = version;
+            let points = [Vector3::ZERO, Vector3::new(1.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 0.0)];
+            let mut p2 = Polyline2D::new();
+            points.iter().for_each(|p| p2.add_vertex(Vertex2D::new(*p)));
+            doc.add_entity(EntityType::Polyline2D(p2)).unwrap();
+            doc.add_entity(EntityType::Polyline3D(Polyline3D::from_points(points.to_vec()))).unwrap();
+            let first = reopen(&doc);
+            let handles = sub_handles(&first);
+            assert_eq!(handles.len(), 2, "{version:?}");
+            assert!(handles.iter().flatten().all(|h| !h.is_null()), "{version:?}: {handles:?}");
+            let second = reopen(&first);
+            assert_eq!(sub_handles(&second), handles, "{version:?}");
+
+            // A copy with the original's handles: both polylines keep every vertex, all handles distinct.
+            let mut copied = second.clone();
+            let copies: Vec<EntityType> = copied
+                .entities()
+                .filter(|e| matches!(e, EntityType::Polyline2D(_) | EntityType::Polyline3D(_)))
+                .cloned()
+                .collect();
+            for mut e in copies {
+                e.common_mut().handle = Handle::NULL;
+                copied.add_entity(e).unwrap();
+            }
+            let copied = reopen(&copied);
+            let all = sub_handles(&copied);
+            assert_eq!(all.len(), 4, "{version:?}");
+            assert_eq!(&all[..2], &handles[..], "{version:?}");
+            assert!(all.iter().all(|v| v.len() == 4), "{version:?}: {all:?}");
+            let distinct: HashSet<Handle> = all.iter().flatten().copied().collect();
+            assert_eq!(distinct.len(), 16, "{version:?}: {all:?}");
+        }
     }
 }

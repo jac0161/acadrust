@@ -265,6 +265,8 @@ impl<'a> DxfWriter<'a> {
             prepared.to_mut().assign_table_entry_handles();
         }
         crate::io::dwg::dwg_writer::prepare_active_viewport_elevation(&mut prepared);
+        // lince (SOL-05): before DXF 2013 a NURBS surface is a SURFACE with AutoCAD's round-trip record, as in DWG.
+        crate::io::dwg::dwg_writer::prepare_nurb_surfaces(&mut prepared, output_version);
         self.write_prepared_dxf(writer, prepared.as_ref(), output_version)
     }
 

@@ -3208,9 +3208,16 @@ impl SatDocument {
         // vertex: before the point). AutoCAD's modeler rejects it in a 400
         // document (modeler error 65000). Plain (non-tolerant) coedges and
         // vertices hold no other numeric field, so drop their integer tokens.
-        for rec in &mut doc.records {
+        // lince (SOL-02/SOL-04): spline subtypes in their 4.0 form. An unknown
+        // one stays as it is (see `splines_cross_schema`).
+        let splines = super::legacy_splines::document_to_v400(&doc.records);
+        for (rec, spline) in doc.records.iter_mut().zip(splines) {
             if rec.entity_type == "coedge" || rec.entity_type == "vertex" {
                 rec.tokens.retain(|t| !matches!(t, SatToken::Integer(_)));
+                rec.raw_text = None;
+            }
+            if let Some(tokens) = spline {
+                rec.tokens = tokens;
                 rec.raw_text = None;
             }
         }
@@ -3219,6 +3226,24 @@ impl SatDocument {
         // one body), and dropping it here must drop that count, or AutoCAD rejects the R2000 DWG (ErrorStatus=53).
         doc.header.num_bodies = doc.records.iter().filter(|r| r.entity_type == "body").count();
         doc
+    }
+
+    /// lince (SOL-02): whether every spline record (`spline-surface`,
+    /// `intcurve-curve`, `pcurve`) of this body can be written in the other
+    /// ACIS schema: a ShapeManager (7.0+) body as 4.0 SAT text for an R13-R2000
+    /// drawing, or a 4.0 body as the tagged 4.0 SAB of a 2013+ one. A body
+    /// that cannot makes AutoCAD reject the whole drawing, so callers leave it
+    /// out.
+    pub fn splines_cross_schema(&self) -> bool {
+        let asm = self.header.version.major >= 7;
+        if asm {
+            let splines = super::legacy_splines::document_to_v400(&self.records);
+            return (self.records.iter().zip(splines))
+                .all(|(record, spline)| spline.is_some() || !super::legacy_splines::is_spline(record));
+        }
+        (self.records.iter())
+            .filter(|record| super::legacy_splines::is_spline(record))
+            .all(|record| super::legacy_splines::to_v400(record, false, true).is_some())
     }
 
     /// Strip non-geometry entities for SAB binary encoding.
@@ -3235,17 +3260,22 @@ impl SatDocument {
     pub fn strip_for_sab(&mut self) {
         // Determine which records to keep.
         // Core ACIS base types (last segment after hyphen split):
-        let keep: Vec<bool> = self
-            .records
-            .iter()
-            .map(|r| {
-                Self::is_core_geometry_type(&r.entity_type)
-                    || matches!(
+        // lince (SOL-01): not in a pre-7.0 body (from an R2000 drawing): its
+        // colour attributes in SAB make AutoCAD reject the 2013+ drawing.
+        let colours = self.header.version.major >= 7;
+        self.strip_records(|r| {
+            Self::is_core_geometry_type(&r.entity_type)
+                || colours
+                    && matches!(
                         r.entity_type.as_str(),
                         "color-adesk-attrib" | "truecolor-adesk-attrib"
                     )
-            })
-            .collect();
+        });
+    }
+
+    /// Remove the records `keep` rejects; pointers to them become null.
+    pub fn strip_records(&mut self, keep: impl Fn(&SatRecord) -> bool) {
+        let keep: Vec<bool> = self.records.iter().map(keep).collect();
 
         let kept_count = keep.iter().filter(|&&k| k).count();
         if kept_count == self.records.len() {

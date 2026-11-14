@@ -425,6 +425,10 @@ impl DxfReader {
             crate::io::dwg::dwg_reader::recover_mtext_bg_roundtrip(&mut document);
         }
 
+        // AutoCAD decomposes INSERTs with annotative ATTRIBs in DXF 2000-2007
+        // exactly as in DWG (anonymous `*U` block marked with XDATA).
+        crate::io::dwg::annotative_attributes::recompose(&mut document);
+
         // Vertex ids are absent in pre-R2010 sources while constraint edge
         // subentities already reference them; rebuild the ids so the
         // references survive a re-encode to R2010+ formats.

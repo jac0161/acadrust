@@ -2381,6 +2381,7 @@ impl DwgDocumentBuilder {
                                         bulge: d.bulge,
                                         curve_tangent: d.tangent_dir,
                                         id: d.vertex_id,
+                                        handle: d.handle,
                                     })
                                 } else {
                                     None
@@ -2459,6 +2460,14 @@ impl DwgDocumentBuilder {
                     }
                     _ => {}
                 }
+            }
+            // The SEQEND keeps its handle too, so saving does not renumber the file's records (HND-01).
+            let seqend = pending.seqends.get(&poly_handle).copied();
+            match &mut entity {
+                EntityType::Polyline2D(e) => e.seqend_handle = seqend,
+                EntityType::Polyline3D(e) => e.seqend_handle = seqend,
+                EntityType::PolygonMesh(e) => e.seqend_handle = seqend,
+                _ => {}
             }
             decoded_pass2 = decoded_pass2.saturating_add(1);
             if let Some(visit) = visit.as_deref_mut() {
@@ -3531,6 +3540,21 @@ impl DwgDocumentBuilder {
                 }
                 if document.header.dim_text_style_handle.value() == old {
                     document.header.dim_text_style_handle = new_h;
+                }
+            }
+        }
+
+        // A default dimension style kept because the file has none of that name still points DIMTXSTY at the
+        // default text style's handle, which the file's records replaced (in AutoCAD samples, a linetype).
+        {
+            let styles: std::collections::HashSet<Handle> =
+                document.text_styles.iter().map(|t| t.handle).collect();
+            if let Some(standard) = document.text_styles.get("Standard").map(|t| t.handle) {
+                for d in document.dim_styles.iter_mut() {
+                    if !d.dimtxsty_handle.is_null() && !styles.contains(&d.dimtxsty_handle) {
+                        d.dimtxsty_handle = standard;
+                        d.dimtxsty = "Standard".to_string();
+                    }
                 }
             }
         }
@@ -9074,5 +9098,39 @@ mod hatch_context_regression_tests {
         assert!(!elevated.evaluate);
         assert_eq!(elevated.main_remaining, 0);
         assert!(elevated.handle_remaining <= 7);
+    }
+}
+
+#[cfg(test)]
+mod retained_dimstyle_tests {
+    use crate::io::dwg::{DwgReader, DwgWriter};
+    use crate::tables::DimStyle;
+    use crate::types::Handle;
+    use crate::CadDocument;
+    use std::io::Cursor;
+
+    /// A file without a "Standard" dimension style (AutoCAD's VW252-03-1200 sample) keeps the reader's default
+    /// one, whose DIMTXSTY held the default text style's handle: a linetype in that file, which progeCAD's AUDIT
+    /// reports. It must point at one of the file's text styles.
+    #[test]
+    fn retained_default_dimstyle_points_at_a_source_text_style() {
+        let mut doc = CadDocument::new();
+        let standard = doc.allocate_handle();
+        doc.text_styles.get_mut("Standard").unwrap().handle = standard;
+        doc.header.current_text_style_handle = standard;
+        doc.header.dim_text_style_handle = standard;
+        let _ = doc.dim_styles.remove("Standard");
+        let mut iso = DimStyle::new("ISO-25");
+        iso.handle = doc.allocate_handle();
+        iso.dimtxsty_handle = standard;
+        doc.header.current_dimstyle_handle = iso.handle;
+        doc.dim_styles.add(iso).unwrap();
+        let read = DwgReader::from_stream(Cursor::new(DwgWriter::write_to_vec(&doc).unwrap()))
+            .read()
+            .unwrap();
+        let styles: Vec<Handle> = read.text_styles.iter().map(|t| t.handle).collect();
+        for d in read.dim_styles.iter() {
+            assert!(styles.contains(&d.dimtxsty_handle), "{} -> {:?}", d.name, d.dimtxsty_handle);
+        }
     }
 }

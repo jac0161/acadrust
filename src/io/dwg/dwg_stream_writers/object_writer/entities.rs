@@ -29,18 +29,26 @@ impl<'a> DwgObjectWriter<'a> {
         data: &crate::classes::arch::ArchEntityData,
         version: crate::types::DxfVersion,
     ) -> crate::error::Result<ArchitectureRecordBody> {
-        use crate::io::dwg::dwg_stream_readers::object_reader::{
-            entities::read_proxy_payload, DwgObjectReader,
-        };
-
         let raw = data.raw_dwg_data.as_deref().ok_or_else(|| {
             crate::error::DxfError::NotImplemented(format!(
                 "Arch entity {} has no DWG class body",
                 data.dxf_name
             ))
         })?;
+        Self::entity_record_body(raw, data.dwg_handle_bits, version)
+    }
+
+    /// The class body of a raw custom-entity record, after its common entity data.
+    fn entity_record_body(
+        raw: &[u8],
+        handle_bits: i64,
+        version: crate::types::DxfVersion,
+    ) -> crate::error::Result<ArchitectureRecordBody> {
+        use crate::io::dwg::dwg_stream_readers::object_reader::{
+            entities::read_proxy_payload, DwgObjectReader,
+        };
         let objects = DwgObjectReader::new(Vec::new(), version, Default::default())?;
-        let (type_code, mut reader) = objects.read_raw_record(raw, data.dwg_handle_bits)?;
+        let (type_code, mut reader) = objects.read_raw_record(raw, handle_bits)?;
         let common = objects.read_common_entity_data(&mut reader, type_code);
         reader.check_error()?;
         let (payload, text, references) = read_proxy_payload(&mut reader, common.common.handle);
@@ -52,6 +60,21 @@ impl<'a> DwgObjectWriter<'a> {
             text,
             references,
         })
+    }
+
+    /// lince (PROXY-CIVIL3D): the class body of a custom entity kept as a raw
+    /// record (Civil 3D, Map 3D…), as proxy data in its source version.
+    pub(crate) fn raw_entity_proxy_body(
+        raw: &[u8],
+        handle_bits: i64,
+        version: crate::types::DxfVersion,
+    ) -> Option<(
+        crate::objects::ProxyPayload,
+        crate::objects::ProxyPayload,
+        Vec<crate::objects::ProxyObjectReference>,
+    )> {
+        let body = Self::entity_record_body(raw, handle_bits, version).ok()?;
+        Some((body.payload, body.text, body.references))
     }
 
     /// lince (fix F2b): the class body of an Arch entity read from a DWG, as
@@ -512,6 +535,7 @@ impl<'a> DwgObjectWriter<'a> {
                 self.write_point_cloud_ex_data(data);
             }
             ExtendedEntityData::Proxy(data) => {
+                self.count_proxy_instance(data.class_id);
                 self.writer.write_bit_long(data.class_id);
                 if self.dxf_version > crate::types::DxfVersion::AC1015 {
                     let dxf_subclass = if data.dxf_subclass.is_empty() {
@@ -2678,10 +2702,16 @@ impl<'a> DwgObjectWriter<'a> {
         self.writer.write_bit_double(e.elevation);
         self.writer.write_bit_extrusion(e.normal);
 
-        // Allocate handles for vertices and seqend
-        let vertex_handles: Vec<Handle> =
-            (0..e.vertices.len()).map(|_| self.alloc_handle()).collect();
-        let seqend_handle = self.alloc_handle();
+        // Keep the handles read from the file; allocate the missing ones.
+        let vertex_handles: Vec<Handle> = e
+            .vertices
+            .iter()
+            .map(|v| if v.handle.is_null() { self.alloc_handle() } else { v.handle })
+            .collect();
+        let seqend_handle = e
+            .seqend_handle
+            .filter(|h| !h.is_null())
+            .unwrap_or_else(|| self.alloc_handle());
 
         if self.version.r2004_plus() {
             self.writer.write_bit_long(e.vertices.len() as i32);
@@ -2796,7 +2826,10 @@ impl<'a> DwgObjectWriter<'a> {
                 }
             })
             .collect();
-        let seqend_handle = self.alloc_handle();
+        let seqend_handle = e
+            .seqend_handle
+            .filter(|h| !h.is_null())
+            .unwrap_or_else(|| self.alloc_handle());
 
         if self.version.r2004_plus() {
             self.writer.write_bit_long(e.vertices.len() as i32);
@@ -3028,7 +3061,10 @@ impl<'a> DwgObjectWriter<'a> {
                 }
             })
             .collect();
-        let seqend_handle = self.alloc_handle();
+        let seqend_handle = e
+            .seqend_handle
+            .filter(|h| !h.is_null())
+            .unwrap_or_else(|| self.alloc_handle());
 
         if self.version.r2004_plus() {
             self.writer.write_bit_long(e.vertices.len() as i32);
@@ -5441,7 +5477,7 @@ impl<'a> DwgObjectWriter<'a> {
         self.writer.write_bit_long(0);
         // COMMON_3DSOLID has an extra-modeler-data gate only when the
         // AcDs-backed entity contains a wireframe section.
-        self.writer.write_bit(acis.extra_acis_data.is_none());
+        self.writer.write_bit(self.written_extra(acis).is_none());
         self.write_extra_acis_data(acis);
     }
 
@@ -5474,9 +5510,21 @@ impl<'a> DwgObjectWriter<'a> {
     }
 
     fn write_extra_acis_data(&mut self, acis: &AcisData) {
-        if let Some(extra) = &acis.extra_acis_data {
+        if let Some(extra) = self.written_extra(acis) {
             self.write_modeler_block(extra);
         }
+    }
+
+    /// lince (SOL-01): the second modeler body that is written. One that would
+    /// go out as SAT text (an R13-R2000 target, or SAT read from one) is left
+    /// out: AutoCAD rejects the drawing with it (ErrorStatus=53, a NURBS
+    /// surface of an R2000 drawing saved as 2000 or 2004) and opens it without.
+    /// shortcut: those wire bodies are lost; matching AutoCAD's SAT framing for
+    /// them would keep them.
+    fn written_extra<'d>(&self, acis: &'d AcisData) -> Option<&'d AcisData> {
+        acis.extra_acis_data
+            .as_deref()
+            .filter(|x| x.is_binary && !x.sab_data.is_empty() && !self.version.r13_15_only())
     }
 
     fn write_modeler_block(&mut self, extra: &AcisData) {
@@ -5605,7 +5653,15 @@ impl<'a> DwgObjectWriter<'a> {
         inline: bool,
     ) -> bool {
         if self.version.r2004_plus() && !acis.is_binary && !acis.sat_data.is_empty() {
-            if let Ok(sat) = crate::entities::acis::SatDocument::parse(&acis.sat_data) {
+            // lince (SOL-01): a legacy (pre-7.0) SAT, as read from an R2000
+            // drawing, stays SAT text when it is written inline (DWG 2004-2010):
+            // AutoCAD opens it there, but rejects the whole drawing when it is
+            // converted to SAB (ErrorStatus=53), stripped or not.
+            let inline_r2004 = !self.version.r2013_plus(self.dxf_version);
+            let parsed = crate::entities::acis::SatDocument::parse(&acis.sat_data)
+                .ok()
+                .filter(|sat| sat.header.version.major >= 7 || !inline_r2004);
+            if let Some(sat) = parsed {
                 let mut binary = acis.clone();
                 binary.is_binary = true;
                 binary.sab_data = self.sab_from_sat(&sat);
@@ -5632,7 +5688,7 @@ impl<'a> DwgObjectWriter<'a> {
                     let wireframe_present =
                         self.write_acis_wireframe(point, acis, wires, silhouettes);
                     if inline || wireframe_present || !self.version.r2013_plus(self.dxf_version) {
-                        self.writer.write_bit(acis.extra_acis_data.is_none());
+                        self.writer.write_bit(self.written_extra(acis).is_none());
                         self.write_extra_acis_data(acis);
                     }
                     self.write_acis_materials(acis, inline);
@@ -5673,7 +5729,13 @@ impl<'a> DwgObjectWriter<'a> {
                     legacy_sat = crate::entities::acis::SatDocument::parse(&sat_text)
                         .ok()
                         .filter(|doc| doc.header.version.major >= 7)
-                        .map(|doc| doc.to_legacy_v400().to_sat_string());
+                        .map(|mut doc| {
+                            // lince (SOL-01): without generic attributes, whose syntax
+                            // changed after 400 (a name attribute made AutoCAD reject an
+                            // extruded surface saved as 2000).
+                            doc.strip_records(|r| !r.entity_type.ends_with("-gen-attrib"));
+                            doc.to_legacy_v400().to_sat_string()
+                        });
                     legacy_sat.as_deref().unwrap_or(&sat_text)
                 } else {
                     &sat_text
@@ -5710,7 +5772,7 @@ impl<'a> DwgObjectWriter<'a> {
         let wireframe_present = self.write_acis_wireframe(point, acis, wires, silhouettes);
         if inline || wireframe_present || !self.version.r2013_plus(self.dxf_version) {
             // True terminates the modeler payload chain.
-            self.writer.write_bit(acis.extra_acis_data.is_none());
+            self.writer.write_bit(self.written_extra(acis).is_none());
             self.write_extra_acis_data(acis);
         }
         if self.version.r2007_plus() {

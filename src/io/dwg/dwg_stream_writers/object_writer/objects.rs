@@ -797,6 +797,17 @@ impl<'a> DwgObjectWriter<'a> {
         }
     }
 
+    /// lince (PROXY-CIVIL3D): a proxy counts as an instance of its original
+    /// class, as AutoCAD counts it; otherwise the class is written as an
+    /// unloaded zombie and ODA readers re-parent the proxy's owned objects.
+    pub(super) fn count_proxy_instance(&mut self, class_id: i32) {
+        if let Ok(class) = i16::try_from(class_id) {
+            if class >= 500 {
+                *self.class_instance_counts.entry(class).or_default() += 1;
+            }
+        }
+    }
+
     fn write_proxy_object(&mut self, value: &ProxyObject) {
         self.write_common_non_entity_data(
             common::OBJ_PROXY_OBJECT,
@@ -805,6 +816,7 @@ impl<'a> DwgObjectWriter<'a> {
             &value.reactors,
             &value.xdictionary_handle,
         );
+        self.count_proxy_instance(value.class_id);
         self.writer.write_bit_long(value.class_id);
         if self.dxf_version > crate::types::DxfVersion::AC1015 {
             let dxf_subclass = if value.dxf_subclass.is_empty() {

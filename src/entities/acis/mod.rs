@@ -42,6 +42,7 @@
 //! assert!(output.contains("700"));
 //! ```
 
+mod legacy_splines;
 pub mod parser;
 pub mod primitives;
 pub mod sab;
