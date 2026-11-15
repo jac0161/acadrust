@@ -124,7 +124,16 @@ fn r12_output_has_no_r13_structures() {
     let text = write_r12(&sample_document());
     let pairs = pairs(&text);
     assert_eq!(header_version(&pairs), "AC1009");
+    let mut record: &str = "";
     for (code, value) in &pairs {
+        if *code == 0 {
+            record = value.as_str();
+        }
+        // LinceCAD (fix F-06): an R12 DIMSTYLE carries DIMBLK in group 5 (not a handle);
+        // AutoCAD 2027 refuses the record without it.
+        if *code == 5 && record == "DIMSTYLE" {
+            continue;
+        }
         // no handles, owners, subclass markers or application groups
         assert!(
             ![5, 100, 102, 330, 360].contains(code),

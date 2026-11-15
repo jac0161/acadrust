@@ -1416,6 +1416,8 @@ fn dwg_roundtrip_entity_count_all_versions() {
             label
         );
         let rt = dwg_roundtrip(&doc);
+        // LinceCAD: a DWG before R2010 leaves the MESH out (AutoCAD rejects it there).
+        let expected = if version < DxfVersion::AC1024 { expected - 1 } else { expected };
         assert_eq!(
             rt.entity_count(),
             expected,
@@ -1434,8 +1436,9 @@ fn dwg_roundtrip_deep_r2018() {
     let (doc, _) = build_rich_document(DxfVersion::AC1032);
     let rt = dwg_roundtrip(&doc);
     let report = compare_documents(&doc, &rt);
-    // Known issues: Shape name not resolvable in DWG (1)
-    let max_known = 1;
+    // Known issues: Shape name not resolvable in DWG (1); LinceCAD (HND-01) gives the
+    // Polyline2D/Polyline3D vertices and SEQEND handles on save (2).
+    let max_known = 3;
     if !report.is_empty() {
         eprintln!(
             "DWG R2018 roundtrip: {} known issue(s):\n{}",
@@ -1458,9 +1461,20 @@ fn dwg_roundtrip_deep_r2000() {
     let rt = dwg_roundtrip(&doc);
     let report = compare_documents(&doc, &rt);
     assert_eq!(rt.classes.len(), 38);
-    assert_eq!(rt.objects.len(), 13);
+    // LinceCAD (fix F5/05, 04b): R2000 keeps ACAD_MLEADERSTYLE and ACAD_TABLESTYLE with their
+    // styles, as AutoCAD's SAVEAS 2000: 4 objects more than upstream.
+    assert_eq!(rt.objects.len(), 17);
 
-    let expected_profile_changes = ["Object count mismatch:", "Class count mismatch:"];
+    // LinceCAD: R2000 leaves the MESH out (R2010 entity) and reading a DWG no longer adds
+    // APPIDs the file lacks (HND-02).
+    let expected_profile_changes = [
+        "Object count mismatch:",
+        "Class count mismatch:",
+        "Entity count mismatch: 26 vs 25",
+        "Entity type distribution mismatch:",
+        "Mesh: present in original",
+        "AppId table count mismatch:",
+    ];
     let unexpected = DiffReport {
         differences: report
             .differences
@@ -1474,8 +1488,9 @@ fn dwg_roundtrip_deep_r2000() {
             .collect(),
     };
 
-    // Known issue: Shape name (1)
-    let max_known = 1;
+    // Known issue: Shape name (1); LinceCAD (HND-01) gives the Polyline2D/Polyline3D
+    // vertices and SEQEND handles on save (2).
+    let max_known = 3;
     if !report.is_empty() {
         eprintln!(
             "DWG R2000 roundtrip: {} known issue(s):\n{}",
@@ -1497,8 +1512,9 @@ fn dwg_roundtrip_deep_r2013() {
     let (doc, _) = build_rich_document(DxfVersion::AC1027);
     let rt = dwg_roundtrip(&doc);
     let report = compare_documents(&doc, &rt);
-    // Known issues: Shape name not resolvable in DWG (1)
-    let max_known = 1;
+    // Known issues: Shape name not resolvable in DWG (1); LinceCAD (HND-01) gives the
+    // Polyline2D/Polyline3D vertices and SEQEND handles on save (2).
+    let max_known = 3;
     if !report.is_empty() {
         eprintln!(
             "DWG R2013 roundtrip: {} known issue(s):\n{}",
@@ -2754,12 +2770,12 @@ fn build_annotative_document() -> CadDocument {
     mls.handle = doc.allocate_handle();
     mls.is_annotative = true;
     doc.objects
-        .insert(mls.handle, ObjectType::MultiLeaderStyle(mls));
+        .insert(mls.handle, ObjectType::MultiLeaderStyle(Box::new(mls)));
 
     let mut tbs = TableStyle::new("AnnoTS");
     tbs.handle = doc.allocate_handle();
     tbs.annotative = true;
-    doc.objects.insert(tbs.handle, ObjectType::TableStyle(tbs));
+    doc.objects.insert(tbs.handle, ObjectType::TableStyle(Box::new(tbs)));
 
     doc
 }
@@ -3160,14 +3176,13 @@ fn dwg_roundtrip_edge_action_param_line() {
         curve: curve.clone(),
         ..Default::default()
     });
-    doc.objects.insert(handle, ObjectType::Associative(object));
+    doc.objects.insert(handle, ObjectType::Associative(Box::new(object)));
 
     let read = dwg_roundtrip(&doc);
-    let Some(ObjectType::Associative(AssociativeObject {
-        data: AssociativeData::EdgeActionParam(edge),
-        ..
-    })) = read.objects.get(&handle)
-    else {
+    let Some(ObjectType::Associative(object)) = read.objects.get(&handle) else {
+        panic!("edge action parameter lost");
+    };
+    let AssociativeData::EdgeActionParam(edge) = &object.data else {
         panic!("edge action parameter lost");
     };
     assert_eq!(edge.action_type, 19);
@@ -3235,7 +3250,7 @@ fn scale_action_survives_dwg_and_dxf_roundtrips() {
     object.handle = handle;
     object.owner = doc.header.named_objects_dict_handle;
     object.data = data.clone();
-    doc.objects.insert(handle, ObjectType::DynamicBlock(object));
+    doc.objects.insert(handle, ObjectType::DynamicBlock(Box::new(object)));
 
     for saved in [dwg_roundtrip(&doc), dxf_roundtrip(doc)] {
         let Some(ObjectType::DynamicBlock(object)) = saved.objects.get(&handle) else {
@@ -3287,7 +3302,7 @@ fn user_parameter_survives_dwg_and_dxf_roundtrips() {
     object.handle = handle;
     object.owner = doc.header.named_objects_dict_handle;
     object.data = data.clone();
-    doc.objects.insert(handle, ObjectType::DynamicBlock(object));
+    doc.objects.insert(handle, ObjectType::DynamicBlock(Box::new(object)));
 
     for saved in [dwg_roundtrip(&doc), dxf_roundtrip(doc)] {
         let Some(ObjectType::DynamicBlock(object)) = saved.objects.get(&handle) else {
@@ -3349,7 +3364,7 @@ fn horizontal_constraint_parameter_survives_dwg_and_dxf_roundtrips() {
         object.handle = handle;
         object.owner = doc.header.named_objects_dict_handle;
         object.data = data.clone();
-        doc.objects.insert(handle, ObjectType::DynamicBlock(object));
+        doc.objects.insert(handle, ObjectType::DynamicBlock(Box::new(object)));
         (doc, handle)
     };
 
@@ -3404,7 +3419,7 @@ fn vertex_action_param_survives_dwg_and_dxf_roundtrips() {
     object.handle = handle;
     object.owner = doc.header.named_objects_dict_handle;
     object.data = data.clone();
-    doc.objects.insert(handle, ObjectType::Associative(object));
+    doc.objects.insert(handle, ObjectType::Associative(Box::new(object)));
 
     for saved in [dwg_roundtrip(&doc), dxf_roundtrip(doc)] {
         let Some(ObjectType::Associative(object)) = saved.objects.get(&handle) else {

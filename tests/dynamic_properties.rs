@@ -243,20 +243,24 @@ fn reflected_rotation_keeps_its_parameter_orientation_and_rejects_broken_caches(
         .unwrap()[0]
         .parameter_handle;
     let node_id = match &doc.objects[&parameter] {
-        ObjectType::DynamicBlock(DynamicBlockObject {
-            data: DynamicBlockData::RotationParameter(p),
-            ..
-        }) => p.parameter.parameter.element.eval.node_id,
+        ObjectType::DynamicBlock(object) => match &object.data {
+            DynamicBlockData::RotationParameter(p) => p.parameter.parameter.element.eval.node_id,
+            _ => panic!(),
+        },
         _ => panic!(),
     };
     let graph = doc
         .objects
         .iter()
         .find_map(|(h, o)| match o {
-            ObjectType::DynamicBlock(DynamicBlockObject {
-                data: DynamicBlockData::EvaluationGraph(g),
-                ..
-            }) if g.nodes.iter().any(|n| n.expression == parameter) => Some(*h),
+            ObjectType::DynamicBlock(object) => match &object.data {
+                DynamicBlockData::EvaluationGraph(g)
+                    if g.nodes.iter().any(|n| n.expression == parameter) =>
+                {
+                    Some(*h)
+                }
+                _ => None,
+            },
             _ => None,
         })
         .unwrap();
@@ -288,7 +292,7 @@ fn reflected_rotation_keeps_its_parameter_orientation_and_rejects_broken_caches(
         code: 70,
         value: XRecordValue::Int16(1),
     });
-    doc.objects.insert(flip_cache, ObjectType::XRecord(state));
+    doc.objects.insert(flip_cache, ObjectType::XRecord(Box::new(state)));
     let ObjectType::Dictionary(d) = doc.objects.get_mut(&cache).unwrap() else {
         panic!()
     };
@@ -299,17 +303,16 @@ fn reflected_rotation_keeps_its_parameter_orientation_and_rejects_broken_caches(
     action.connections[0].code = 9876;
     doc.objects.insert(
         action_handle,
-        ObjectType::DynamicBlock(DynamicBlockObject {
+        ObjectType::DynamicBlock(Box::new(DynamicBlockObject {
             handle: action_handle,
             data: DynamicBlockData::FlipAction(action),
             ..Default::default()
-        }),
+        })),
     );
-    let ObjectType::DynamicBlock(DynamicBlockObject {
-        data: DynamicBlockData::EvaluationGraph(g),
-        ..
-    }) = doc.objects.get_mut(&graph).unwrap()
-    else {
+    let ObjectType::DynamicBlock(object) = doc.objects.get_mut(&graph).unwrap() else {
+        panic!()
+    };
+    let DynamicBlockData::EvaluationGraph(g) = &mut object.data else {
         panic!()
     };
     let mut node = g.nodes[0].clone();

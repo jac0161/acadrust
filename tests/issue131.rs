@@ -377,7 +377,7 @@ fn legacy_table_names_eed_xrecord_and_summary_strings_use_selected_page() {
             record.add_string(1, value.clone());
             document
                 .objects
-                .insert(record_handle, ObjectType::XRecord(record));
+                .insert(record_handle, ObjectType::XRecord(Box::new(record)));
             let output = DwgWriter::write_to_vec(&document).unwrap();
             let read = DwgReader::from_stream(Cursor::new(output)).read().unwrap();
             let text = read.get_entity(text_handle).unwrap();

@@ -95,7 +95,13 @@ fn assert_geometry(expected: &CadDocument, actual: &CadDocument, handles: [Handl
                 assert_eq!(points(actual), points(expected));
             }
             (EntityType::Polyline2D(expected), EntityType::Polyline2D(actual)) => {
-                assert_eq!(actual.vertices, expected.vertices);
+                // LinceCAD (HND-01): vertices get their handles on save; compare geometry only.
+                let geometry = |polyline: &Polyline2D| {
+                    let mut vertices = polyline.vertices.clone();
+                    vertices.iter_mut().for_each(|vertex| vertex.handle = Handle::NULL);
+                    vertices
+                };
+                assert_eq!(geometry(actual), geometry(expected));
             }
             (EntityType::Insert(expected), EntityType::Insert(actual)) => {
                 assert_eq!(actual.insert_point, expected.insert_point);

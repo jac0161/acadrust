@@ -123,12 +123,12 @@ fn definition_document(version: DxfVersion, kind: UnderlayType) -> CadDocument {
     def.file_path = "C:/refs/site-plan.pdf".to_string();
     def.page_name = "Sheet1".to_string();
     doc.objects
-        .insert(def.handle, ObjectType::UnderlayDefinition(def));
+        .insert(def.handle, ObjectType::UnderlayDefinition(Box::new(def)));
     doc
 }
 
 fn extract_definition(doc: &CadDocument) -> UnderlayDefinition {
-    doc.objects
+    *doc.objects
         .values()
         .find_map(|o| match o {
             ObjectType::UnderlayDefinition(d) => Some(d.clone()),

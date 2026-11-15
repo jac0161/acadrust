@@ -56,11 +56,18 @@ fn write_at(doc: &CadDocument, version: DxfVersion) -> CadDocument {
     back
 }
 
-fn keeps(version: DxfVersion, name: &str, mleader_class: bool) -> bool {
+// LinceCAD (fix F5/05, 04b): like AutoCAD 2027's SAVEAS 2000, saves from R2000 on keep
+// ACAD_TABLESTYLE / ACAD_MLEADERSTYLE when the drawing declares the style's class.
+fn keeps(version: DxfVersion, name: &str, input: &CadDocument) -> bool {
+    let declared = |class: &str| input.classes.get_by_name(class).is_some();
     match name {
-        "ACAD_TABLESTYLE" => version >= DxfVersion::AC1018,
+        "ACAD_TABLESTYLE" => {
+            version >= DxfVersion::AC1018
+                || (version >= DxfVersion::AC1015 && declared("TABLESTYLE"))
+        }
         "ACAD_MLEADERSTYLE" => {
-            version >= DxfVersion::AC1021 || (version >= DxfVersion::AC1018 && mleader_class)
+            version >= DxfVersion::AC1021
+                || (version >= DxfVersion::AC1015 && declared("MLEADERSTYLE"))
         }
         _ => false,
     }
@@ -74,7 +81,6 @@ fn legacy_writes_keep_styles_only_from_their_introduction_version() {
         want_tables > 0 && want_leaders > 0 && want_entries.len() == STYLES.len(),
         "fixture must carry both styles: tables={want_tables} leaders={want_leaders} entries={want_entries:?}"
     );
-    let mleader_class = input.classes.get_by_name("MLEADERSTYLE").is_some();
 
     for version in [
         DxfVersion::AC1015,
@@ -86,8 +92,8 @@ fn legacy_writes_keep_styles_only_from_their_introduction_version() {
     ] {
         let back = write_at(&input, version);
         let (tables, leaders, entries) = styles(&back);
-        let keep_table = keeps(version, "ACAD_TABLESTYLE", mleader_class);
-        let keep_leader = keeps(version, "ACAD_MLEADERSTYLE", mleader_class);
+        let keep_table = keeps(version, "ACAD_TABLESTYLE", &input);
+        let keep_leader = keeps(version, "ACAD_MLEADERSTYLE", &input);
 
         assert_eq!(
             tables,
@@ -100,7 +106,7 @@ fn legacy_writes_keep_styles_only_from_their_introduction_version() {
             "{version:?}: MLEADERSTYLE"
         );
         for name in STYLES {
-            let kept = keeps(version, name, mleader_class);
+            let kept = keeps(version, name, &input);
             assert_eq!(
                 entries.get(name).copied(),
                 kept.then(|| want_entries[name]),

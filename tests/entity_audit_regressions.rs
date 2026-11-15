@@ -81,7 +81,7 @@ fn underlay_definitions_keep_reactor_back_references() {
     definition.owner_handle = doc.header.named_objects_dict_handle;
     let def_handle = definition.handle;
     doc.objects
-        .insert(def_handle, ObjectType::UnderlayDefinition(definition));
+        .insert(def_handle, ObjectType::UnderlayDefinition(Box::new(definition)));
     if let Some(ObjectType::Dictionary(root)) =
         doc.objects.get_mut(&doc.header.named_objects_dict_handle)
     {

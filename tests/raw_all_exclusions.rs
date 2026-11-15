@@ -90,7 +90,7 @@ fn exclusions_force_serialization_in_serial_and_parallel_writers() {
         let xrecord_handle = xrecord.handle;
         source
             .objects
-            .insert(xrecord_handle, ObjectType::XRecord(xrecord));
+            .insert(xrecord_handle, ObjectType::XRecord(Box::new(xrecord)));
         std::env::set_var("ACADRUST_RAW_ALL", "1");
         let mut captured = roundtrip(&source);
 

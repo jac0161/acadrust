@@ -39,17 +39,17 @@ fn resolves_checker_asset_records_into_material_maps() {
 
     document
         .objects
-        .insert(material_handle, ObjectType::Material(material));
+        .insert(material_handle, ObjectType::Material(Box::new(material)));
     document
         .objects
         .insert(dictionary_handle, ObjectType::Dictionary(dictionary));
     document.objects.insert(
         diffuse_handle,
-        ObjectType::XRecord(checker_record("DIFFUSE", diffuse_handle, dictionary_handle)),
+        ObjectType::XRecord(Box::new(checker_record("DIFFUSE", diffuse_handle, dictionary_handle))),
     );
     document.objects.insert(
         opacity_handle,
-        ObjectType::XRecord(checker_record("OPACITY", opacity_handle, dictionary_handle)),
+        ObjectType::XRecord(Box::new(checker_record("OPACITY", opacity_handle, dictionary_handle))),
     );
 
     document.resolve_xrecord_backed_properties();

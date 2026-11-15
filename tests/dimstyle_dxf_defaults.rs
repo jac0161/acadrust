@@ -108,5 +108,7 @@ fn new_styles_keep_their_metric_defaults() {
     assert!(!fresh.dimtih);
     let defaults = DimStyle::dxf_defaults("Fresh");
     assert_eq!(defaults.name, "Fresh");
-    assert_eq!(defaults.dimtxt, fresh.dimtxt, "shared values stay shared");
+    // LinceCAD (fix cotas): new styles use ISO-25 sizes; DXF read defaults keep the imperial ones.
+    assert_eq!(fresh.dimtxt, 2.5);
+    assert_eq!(defaults.dimtxt, 0.18);
 }

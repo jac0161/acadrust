@@ -645,7 +645,7 @@ fn build(version: DxfVersion, assets: &Path) -> Sheet {
             let dh = def.handle;
             s.doc
                 .objects
-                .insert(dh, ObjectType::UnderlayDefinition(def));
+                .insert(dh, ObjectType::UnderlayDefinition(Box::new(def)));
             if let Some(ObjectType::Dictionary(d)) = s.doc.objects.get_mut(&dictionary) {
                 d.add_entry("REFERENCE", dh);
             }

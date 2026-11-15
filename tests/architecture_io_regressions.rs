@@ -158,7 +158,7 @@ fn object_drawing() -> (CadDocument, Handle, Handle) {
     object.raw_dwg_data = Some(raw);
     object.raw_dwg_handle_bits = handle_bits;
     object.raw_dwg_version = Some(doc.version);
-    doc.objects.insert(handle, ObjectType::Arch(object));
+    doc.objects.insert(handle, ObjectType::Arch(Box::new(object)));
     let ObjectType::Dictionary(dictionary) = doc.objects.get_mut(&root).unwrap() else {
         panic!()
     };
@@ -299,13 +299,10 @@ fn dxf_export_omits_an_arch_entity_without_graphics_and_keeps_the_rest() {
         assert!(saved.get_entity(wall).is_none());
         assert!(saved.get_entity(line).is_some());
     }
-    let mut output = Vec::new();
-    let error = DxfWriter::new(&doc)
-        .with_version(DxfVersion::AC1009)
-        .write_to_writer(&mut output)
-        .unwrap_err();
-    assert!(error.to_string().contains("Arch entity AEC_WALL"));
-    assert!(output.is_empty());
+    // LinceCAD (fix F-06): R12 leaves AEC records out, as AutoCAD 2027's SAVEAS R12, instead of failing.
+    let r12 = DxfWriter::new(&doc).with_version(DxfVersion::AC1009);
+    assert!(r12.omitted_architecture_records().is_empty());
+    assert!(!r12.write_to_vec().unwrap().is_empty());
 }
 
 #[test]
@@ -338,7 +335,7 @@ fn dxf_export_omits_arch_objects_without_a_dxf_body() {
     let mut doc = CadDocument::new();
     let handle = Handle::from(0x1000);
     let object = ArchObject::new("AEC_WALL_STYLE", handle, Handle::NULL);
-    doc.objects.insert(handle, ObjectType::Arch(object));
+    doc.objects.insert(handle, ObjectType::Arch(Box::new(object)));
     let root = doc.header.named_objects_dict_handle;
     let ObjectType::Dictionary(dictionary) = doc.objects.get_mut(&root).unwrap() else {
         panic!()
@@ -369,7 +366,7 @@ fn dxf_export_drops_xdata_handles_that_point_at_omitted_arch_objects() {
     let handle = Handle::from(0x1000);
     doc.objects.insert(
         handle,
-        ObjectType::Arch(ArchObject::new("AEC_WALL_STYLE", handle, Handle::NULL)),
+        ObjectType::Arch(Box::new(ArchObject::new("AEC_WALL_STYLE", handle, Handle::NULL))),
     );
     let layer = doc.layers.get("0").unwrap().handle;
     let mut line = acadrust::entities::Line::from_points(
@@ -408,15 +405,16 @@ fn dxf_export_drops_xdata_handles_that_point_at_omitted_arch_objects() {
 }
 
 #[test]
-fn rejected_r12_aec_export_does_not_truncate_existing_file() {
+fn r12_aec_export_omits_aec_and_overwrites_existing_file() {
+    // LinceCAD (fix F-06): an R12 export with AEC records is no longer rejected; AEC is left out.
     let (doc, _) = drawing();
     let path = std::env::temp_dir().join(format!("acadrust-aec-export-{}.dxf", std::process::id()));
     std::fs::write(&path, b"existing drawing").unwrap();
-    assert!(DxfWriter::new(&doc)
+    DxfWriter::new(&doc)
         .with_version(DxfVersion::AC1009)
         .write_to_file(&path)
-        .is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), b"existing drawing");
+        .unwrap();
+    assert_ne!(std::fs::read(&path).unwrap(), b"existing drawing");
     std::fs::remove_file(path).unwrap();
 }
 
@@ -450,12 +448,13 @@ fn native_aec_dxf_body_still_roundtrips() {
         .unwrap()
         .contains(&(1, "opaque AEC DXF state".into())));
 
+    // LinceCAD (fix F-06): R12 leaves the AEC body out instead of failing.
     let mut output = Vec::new();
-    assert!(DxfWriter::new(&doc)
+    DxfWriter::new(&doc)
         .with_version(DxfVersion::AC1009)
         .write_to_writer(&mut output)
-        .is_err());
-    assert!(output.is_empty());
+        .unwrap();
+    assert!(!output.is_empty());
 }
 
 #[test]

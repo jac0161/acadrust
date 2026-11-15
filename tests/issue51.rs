@@ -76,7 +76,7 @@ fn sample_document(version: DxfVersion) -> CadDocument {
         code: 1,
         value: XRecordValue::String("first".to_string()),
     });
-    doc.objects.insert(x1_handle, ObjectType::XRecord(x1));
+    doc.objects.insert(x1_handle, ObjectType::XRecord(Box::new(x1)));
 
     let mut x2 = XRecord::new();
     x2.handle = x2_handle;
@@ -85,7 +85,7 @@ fn sample_document(version: DxfVersion) -> CadDocument {
         code: 1,
         value: XRecordValue::String("second".to_string()),
     });
-    doc.objects.insert(x2_handle, ObjectType::XRecord(x2));
+    doc.objects.insert(x2_handle, ObjectType::XRecord(Box::new(x2)));
 
     // Extension-style dictionary: wide hard-owner flag set (280 = 1). The
     // writer emits its entries with code 360; the reader must record that
@@ -259,7 +259,7 @@ fn mlinestyle_angles_stable_across_roundtrips() {
     style.end_angle = std::f64::consts::FRAC_PI_4; // 45 degrees
     let style_handle = style.handle;
     doc.objects
-        .insert(style_handle, ObjectType::MLineStyle(style));
+        .insert(style_handle, ObjectType::MLineStyle(Box::new(style)));
 
     // DXF carries degrees.
     let bytes = write_dxf(&doc);
@@ -455,7 +455,7 @@ fn visualstyle_record_carries_code_291() {
         let mut style = acadrust::objects::VisualStyle::new();
         style.handle = doc.allocate_handle();
         doc.objects
-            .insert(style.handle, ObjectType::VisualStyle(style));
+            .insert(style.handle, ObjectType::VisualStyle(Box::new(style)));
 
         let text = String::from_utf8(write_dxf(&doc)).unwrap();
         let lines: Vec<&str> = text.split("\r\n").collect();
@@ -510,7 +510,7 @@ fn handle_less_records_receive_handles_on_read() {
     let mut xrecord = XRecord::new();
     xrecord.handle = Handle::NULL;
     doc.objects
-        .insert(Handle::NULL, ObjectType::XRecord(xrecord));
+        .insert(Handle::NULL, ObjectType::XRecord(Box::new(xrecord)));
     // A dictionary whose map key is valid but whose record handle is NULL.
     let mut dict = Dictionary::new();
     dict.handle = Handle::NULL;
@@ -660,7 +660,7 @@ fn supported_assoc_objects_are_written() {
     assoc.handle = assoc_handle;
     assoc.owner = nod_handle;
     doc.objects
-        .insert(assoc_handle, ObjectType::Associative(assoc));
+        .insert(assoc_handle, ObjectType::Associative(Box::new(assoc)));
 
     if let Some(ObjectType::Dictionary(nod)) = doc.objects.get_mut(&nod_handle) {
         nod.add_entry("ACDBASSOC2DCONSTRAINTGROUP", assoc_handle);

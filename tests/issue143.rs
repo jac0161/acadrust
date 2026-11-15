@@ -106,21 +106,21 @@ fn paper_space_names_and_anonymous_bases_are_consistent() {
             let (mut doc, lines) = drawing(version);
             let old_paper = doc.header.paper_space_block_handle;
             let active = lines[active_layout].1;
-            let old_active_name = doc
-                .block_records
-                .iter()
-                .find(|b| b.handle == active)
-                .unwrap()
-                .name
-                .clone();
             doc.header.paper_space_block_handle = active;
             let objects = objects(&doc);
             let names = record_names(&doc, &objects);
+            // LinceCAD: every layout record is written with the bare *Paper_Space name, as
+            // AutoCAD does (it numbers them itself on read), so only the others must be unique.
             let regular: Vec<_> = doc
                 .block_records
                 .iter()
-                .filter(|block| !block.flags.anonymous)
+                .filter(|block| !block.flags.anonymous && !block.is_paper_space())
                 .collect();
+            assert!(doc
+                .block_records
+                .iter()
+                .filter(|block| block.is_paper_space())
+                .all(|block| names[&block.handle] == "*Paper_Space"));
             let unique: HashSet<_> = regular
                 .iter()
                 .map(|block| names[&block.handle].to_uppercase())
@@ -131,9 +131,6 @@ fn paper_space_names_and_anonymous_bases_are_consistent() {
                 "duplicate names in {version:?}"
             );
             assert_eq!(names[&active], "*Paper_Space");
-            if active != old_paper {
-                assert_eq!(names[&old_paper], old_active_name);
-            }
             for name in ["*U42", "*U99"] {
                 let block = doc.block_records.get(name).unwrap();
                 assert_eq!(names[&block.handle], "*U");
@@ -201,10 +198,14 @@ fn changing_active_layout_preserves_cached_entity_owners_and_layout_links() {
             loaded.block_records.get("*Paper_Space").unwrap().handle,
             active
         );
-        assert_eq!(
-            loaded.block_records.get("*Paper_Space1").unwrap().handle,
-            old_paper
-        );
+        // LinceCAD: the reader numbers the bare *Paper_Space records in file order.
+        let old_name = &loaded
+            .block_records
+            .iter()
+            .find(|block| block.handle == old_paper)
+            .unwrap()
+            .name;
+        assert!(old_name.starts_with("*Paper_Space") && old_name != "*Paper_Space");
         for (handle, owner) in &lines {
             assert_eq!(
                 loaded.get_entity(*handle).unwrap().common().owner_handle,

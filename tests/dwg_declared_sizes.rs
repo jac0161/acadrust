@@ -127,7 +127,10 @@ fn rewrite_section_map(bytes: &[u8], edit: impl Fn(&str, Vec<u8>) -> Vec<u8>) ->
     }
     out.extend_from_slice(&map[pos..]);
     let packed = DwgLZ77AC18Compressor::new().compress(&out, 0, out.len());
-    assert!(packed.len() <= room, "rewritten section map does not fit");
+    // The page is padded to 32 bytes after its 20-byte header and data; the rewrite may use
+    // that padding (a recompressed map can come out a byte or two longer than the original).
+    let padded_room = (20 + room).div_ceil(32) * 32 - 20;
+    assert!(packed.len() <= padded_room, "rewritten section map does not fit");
     let mut bytes = bytes.to_vec();
     put_i32(&mut bytes, at + 4, out.len() as i32);
     put_i32(&mut bytes, at + 8, packed.len() as i32);

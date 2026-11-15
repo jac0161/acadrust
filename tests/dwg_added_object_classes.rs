@@ -37,7 +37,7 @@ fn representation_data_added_after_reading_survives_dwg_save() {
         object.handle = handle;
         object.owner = doc.header.named_objects_dict_handle;
         object.data = DynamicBlockData::Representation(BlockRepresentationData { flags: 1, block });
-        doc.objects.insert(handle, ObjectType::DynamicBlock(object));
+        doc.objects.insert(handle, ObjectType::DynamicBlock(Box::new(object)));
 
         let back = read(DwgWriter::write_to_vec(&doc).unwrap());
         assert!(
@@ -45,10 +45,12 @@ fn representation_data_added_after_reading_survives_dwg_save() {
             "{version:?}: class not declared"
         );
         match back.objects.get(&handle) {
-            Some(ObjectType::DynamicBlock(DynamicBlockObject {
-                data: DynamicBlockData::Representation(data),
-                ..
-            })) => assert_eq!((data.flags, data.block), (1, block)),
+            Some(ObjectType::DynamicBlock(object)) => match &object.data {
+                DynamicBlockData::Representation(data) => {
+                    assert_eq!((data.flags, data.block), (1, block))
+                }
+                other => panic!("{version:?}: representation lost, read {other:?}"),
+            },
             other => panic!("{version:?}: representation lost, read {other:?}"),
         }
         assert_ne!(handle, Handle::NULL);

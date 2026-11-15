@@ -83,7 +83,7 @@ fn post_read_default_repair_allocates_above_file_handles() {
     xrecord.owner = source.header.named_objects_dict_handle;
     source
         .objects
-        .insert(xrecord.handle, ObjectType::XRecord(xrecord));
+        .insert(xrecord.handle, ObjectType::XRecord(Box::new(xrecord)));
 
     for (name, handle) in [
         ("HATCHBACKGROUNDCOLOR", Handle::new(0x33)),
