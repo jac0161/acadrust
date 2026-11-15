@@ -1916,7 +1916,7 @@ impl<R: Read + Seek> DwgReader<R> {
     /// [0x00] Version string (6 bytes)
     /// [0x06] Padding + maintenance version (7 bytes)
     /// [0x0D] Preview seeker (4 bytes)
-    /// [0x11] Magic bytes (2 bytes: 0x1B, 0x19)
+    /// [0x11] Writing application's version and maintenance bytes (0x21 0xFF from AutoCAD 2027)
     /// [0x13] Code page (2 bytes LE)
     /// [0x15] Record count (4 bytes LE) — always 6
     /// [0x19] 6 × Section locator records (9 bytes each)

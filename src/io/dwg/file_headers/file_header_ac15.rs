@@ -226,9 +226,15 @@ impl DwgFileHeaderWriterAC15 {
             .map_or(0i32, |(r, _)| r.seeker as i32);
         buf.write_i32::<LittleEndian>(preview_seeker)?;
 
-        // 0x11: application/version bytes. The AC15 reader and the known-good
-        // R2000 fixtures use this fixed pair for the whole R13-R2000 family.
-        buf.extend_from_slice(&[0x1B, 0x19]);
+        // 0x11: version and maintenance release of the writing application.
+        // AutoCAD 2027 writes 0x21 0xFF in its R2000 files; with the older
+        // 0x1B 0x19 it treats the file as written by an old release and drops
+        // angular dimensional constraints on open (AS-03). R13/R14 keep 0x1B 0x19.
+        if self.version == DxfVersion::AC1015 {
+            buf.extend_from_slice(&[0x21, 0xFF]);
+        } else {
+            buf.extend_from_slice(&[0x1B, 0x19]);
+        }
 
         // 0x13: Compact DWG code-page index.
         buf.write_u16::<LittleEndian>(self.code_page)?;
@@ -389,7 +395,7 @@ mod tests {
         let data = output.into_inner();
         assert_eq!(&data[0..6], b"AC1015");
         assert_eq!(data[0x0B], 15);
-        assert_eq!(&data[0x11..0x13], &[0x1B, 0x19]);
+        assert_eq!(&data[0x11..0x13], &[0x21, 0xFF]);
     }
 
     #[test]
@@ -567,5 +573,6 @@ mod tests {
 
         let data = output.into_inner();
         assert_eq!(&data[0..6], b"AC1012");
+        assert_eq!(&data[0x11..0x13], &[0x1B, 0x19]);
     }
 }
